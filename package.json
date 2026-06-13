@@ -1,0 +1,10 @@
+{
+  "name": "tauritavern-branch-memory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check index.js && node --check src/app.js && node --check src/core.js && node --check src/defaults.js && node --check src/engine.js && node --check src/history.js && node --check src/storage.js && node --check src/ui.js"
+  }
+}
