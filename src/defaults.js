@@ -11,6 +11,11 @@ export const DEFAULT_SETTINGS = {
     enabled: true,
     memory: {
         enabled: true,
+        api: {
+            mode: 'current',
+            connectionProfileId: '',
+            includePreset: true
+        },
         smallEvery: 8,
         largeEvery: 32,
         reserveFloors: 4,
@@ -69,6 +74,11 @@ export const DEFAULT_SETTINGS = {
     },
     status: {
         enabled: true,
+        api: {
+            mode: 'current',
+            connectionProfileId: '',
+            includePreset: true
+        },
         contextFloors: 6,
         responseLength: 350,
         inputRegex: [],

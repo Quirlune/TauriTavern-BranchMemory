@@ -10,6 +10,7 @@
 - 状态栏在每次 AI 输出后进行另一笔独立模型调用，并显示在聊天区最底部。
 - 记忆模块和状态栏模块分别拥有输入正则、输出正则和可排序提示词条目栈。
 - 状态栏支持自定义 HTML 模板与 CSS。
+- 记忆模块和状态栏模块可以分别选择 Connection Manager 中的独立 Chat Completion 配置。
 
 ## 安装
 
@@ -32,6 +33,16 @@ data/extensions/third-party/TauriTavern-BranchMemory
 - `window.__TAURITAVERN__.api.chat`
 - `window.__TAURITAVERN__.api.extension.store`
 - SillyTavern/TauriTavern 前端的 `generateRaw()` 与 `setExtensionPrompt()`
+- 独立模型连接模式依赖内建 Connection Manager
+
+## 独立模型连接
+
+记忆与状态栏各自提供两种调用来源：
+
+1. 沿用当前聊天 API。
+2. 选择 Connection Manager 中保存的 Chat Completion Profile。
+
+独立模式只保存 Profile ID，API Key 仍由酒馆的密钥系统管理。记忆和状态栏可以选择不同的 Profile，也不会切换当前聊天正在使用的模型连接。
 
 ## 分支规则
 
@@ -92,6 +103,29 @@ data/extensions/third-party/TauriTavern-BranchMemory
 ```
 
 正则使用 JavaScript `RegExp` 语法，规则按界面中的顺序执行。
+
+## 状态栏渲染位置
+
+状态栏宿主节点是 `#chat` 的最后一个子节点，和普通消息处在同一个可滚动消息流中：
+
+```text
+#chat
+  消息 1
+  消息 2
+  ...
+  最后一条消息
+  #ttbm-status-host
+```
+
+它没有 `fixed`、`sticky` 或输入框锚定定位。新消息渲染后，扩展会把状态栏节点重新移动到消息流末尾，因此状态栏始终紧接最后一条消息，并随聊天历史一起滚动。
+
+渲染流程：
+
+```text
+模型输出 -> 状态栏输出正则 -> HTML 转义（默认） -> HTML 模板 -> 自定义 CSS
+```
+
+开启“把状态输出按 HTML 渲染”后会跳过 HTML 转义，适合由你自己的提示词输出结构化状态栏 HTML。
 
 ## 开发检查
 

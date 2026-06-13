@@ -81,6 +81,7 @@ export class BranchMemoryEngine {
         const smallRecipe = recipeHash({
             every: settings.memory.smallEvery,
             responseLength: settings.memory.responseLength,
+            api: settings.memory.api,
             inputRegex: settings.memory.inputRegex,
             outputRegex: settings.memory.outputRegex,
             promptEntries: settings.memory.smallPromptEntries
@@ -88,6 +89,7 @@ export class BranchMemoryEngine {
         const largeRecipe = recipeHash({
             every: settings.memory.largeEvery,
             responseLength: settings.memory.responseLength,
+            api: settings.memory.api,
             inputRegex: settings.memory.inputRegex,
             outputRegex: settings.memory.outputRegex,
             promptEntries: settings.memory.largePromptEntries,
@@ -142,6 +144,7 @@ export class BranchMemoryEngine {
             const statusRecipe = recipeHash({
                 contextFloors: settings.status.contextFloors,
                 responseLength: settings.status.responseLength,
+                api: settings.status.api,
                 inputRegex: settings.status.inputRegex,
                 outputRegex: settings.status.outputRegex,
                 promptEntries: settings.status.promptEntries
@@ -219,7 +222,7 @@ export class BranchMemoryEngine {
         const previousLarge = latestBefore(largeRecords, startFloor)?.content || '';
         const values = this.#baseValues({ snapshot, startFloor, endFloor: floor, settings, previousLarge });
         const prompt = promptEntriesToMessages(settings.memory.smallPromptEntries, values);
-        const content = await this.#runModel(prompt, settings.memory.responseLength, settings.memory.outputRegex, '小总结');
+        const content = await this.#runModel(prompt, settings.memory.responseLength, settings.memory.outputRegex, '小总结', settings.memory.api);
         if (!this.#isCurrent(identity)) return null;
 
         const anchor = getFloor(snapshot, floor);
@@ -251,7 +254,7 @@ export class BranchMemoryEngine {
             smallSummaries: formatRecords(contributingSmall, '小总结')
         });
         const prompt = promptEntriesToMessages(settings.memory.largePromptEntries, values);
-        const content = await this.#runModel(prompt, settings.memory.responseLength, settings.memory.outputRegex, '大总结');
+        const content = await this.#runModel(prompt, settings.memory.responseLength, settings.memory.outputRegex, '大总结', settings.memory.api);
         if (!this.#isCurrent(identity)) return null;
 
         const anchor = getFloor(snapshot, floor);
@@ -278,7 +281,7 @@ export class BranchMemoryEngine {
             chat: transcriptForFloorRange(snapshot, startFloor, snapshot.totalFloors, settings.status.inputRegex)
         };
         const prompt = promptEntriesToMessages(settings.status.promptEntries, values);
-        const content = await this.#runModel(prompt, settings.status.responseLength, settings.status.outputRegex, '状态栏');
+        const content = await this.#runModel(prompt, settings.status.responseLength, settings.status.outputRegex, '状态栏', settings.status.api);
         if (!this.#isCurrent(identity)) return null;
 
         const record = {
@@ -295,11 +298,11 @@ export class BranchMemoryEngine {
         return record;
     }
 
-    async #runModel(prompt, responseLength, outputRegex, label) {
+    async #runModel(prompt, responseLength, outputRegex, label, apiConfig) {
         if (!prompt.length) {
             throw new Error(`${label}没有启用的提示词条目。`);
         }
-        const raw = await this.generate({ prompt, responseLength });
+        const raw = await this.generate({ prompt, responseLength, apiConfig });
         const content = applyRegexRules(String(raw ?? '').trim(), outputRegex).trim();
         if (!content) {
             throw new Error(`${label}经过输出正则处理后为空。`);

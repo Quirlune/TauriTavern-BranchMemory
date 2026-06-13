@@ -6,6 +6,7 @@ import {
     generateRaw,
     setExtensionPrompt
 } from '/script.js';
+import { ConnectionManagerRequestService } from '/scripts/extensions/shared.js';
 import { clampInteger, deepMerge } from './core.js';
 import { DEFAULT_SETTINGS } from './defaults.js';
 import { BranchMemoryEngine } from './engine.js';
@@ -56,6 +57,7 @@ export async function bootstrapExtension() {
     const settings = normalizeSettings(deepMerge(DEFAULT_SETTINGS, saved || {}));
 
     let saveTimer = null;
+    let pendingSettingsApply = false;
     let refreshTimer = null;
     let pendingRefresh = { generateMemory: false, generateStatus: false, reason: 'scheduled' };
     let queue = Promise.resolve();
@@ -80,16 +82,37 @@ export async function bootstrapExtension() {
         }, delay);
     };
 
+    const getConnectionProfiles = () => {
+        try {
+            return ConnectionManagerRequestService.getSupportedProfiles()
+                .filter(profile => ConnectionManagerRequestService.validateProfile(profile).selected === 'openai')
+                .map(profile => ({
+                    id: profile.id,
+                    name: profile.name || profile.model || profile.id,
+                    api: profile.api || '',
+                    model: profile.model || ''
+                }));
+        } catch {
+            return [];
+        }
+    };
+
     const ui = new SettingsUi({
         settings,
-        onSettingsChanged: () => {
+        getConnectionProfiles,
+        onSettingsChanged: (_settings, { apply = false } = {}) => {
             normalizeSettings(settings);
+            pendingSettingsApply ||= apply;
             clearTimeout(saveTimer);
             saveTimer = setTimeout(() => {
+                const shouldApply = pendingSettingsApply;
+                pendingSettingsApply = false;
                 void storage.saveSettings(settings)
-                    .then(() => enqueue({ generateMemory: false, generateStatus: false, reason: 'settings_changed' }))
+                    .then(() => shouldApply
+                        ? enqueue({ generateMemory: false, generateStatus: false, reason: 'settings_changed' })
+                        : undefined)
                     .catch(error => ui.showError(error));
-            }, 550);
+            }, 800);
         },
         onRunNow: () => enqueue({ generateMemory: true, generateStatus: true, reason: 'manual' })
     });
@@ -97,11 +120,27 @@ export async function bootstrapExtension() {
     engine = new BranchMemoryEngine({
         storage,
         getSettings: () => settings,
-        generate: ({ prompt, responseLength }) => generateRaw({
-            prompt,
-            responseLength,
-            trimNames: false
-        }),
+        generate: async ({ prompt, responseLength, apiConfig }) => {
+            if (apiConfig?.mode === 'connection_profile') {
+                const profileId = String(apiConfig.connectionProfileId || '').trim();
+                if (!profileId) {
+                    throw new Error('已选择独立 API，但尚未选择 Connection Manager 配置。');
+                }
+                const response = await ConnectionManagerRequestService.sendRequest(
+                    profileId,
+                    prompt,
+                    responseLength,
+                    {
+                        stream: false,
+                        extractData: true,
+                        includePreset: apiConfig.includePreset !== false,
+                        includeInstruct: false
+                    }
+                );
+                return response?.content || '';
+            }
+            return generateRaw({ prompt, responseLength, trimNames: false });
+        },
         applyInjection,
         renderStatus: (content, statusSettings) => ui.renderStatus(content, statusSettings),
         updateStats: stats => ui.updateStats(stats)
@@ -114,11 +153,15 @@ export async function bootstrapExtension() {
         schedule({ generateMemory: false, generateStatus: false, reason: 'chat_changed' }, 250);
     });
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, (_messageId, type) => {
+        ui.ensureStatusAtChatEnd();
         if (type === 'first_message') {
             schedule({ generateMemory: false, generateStatus: false, reason: 'first_message' }, 300);
             return;
         }
         schedule({ generateMemory: true, generateStatus: true, reason: 'assistant_output' }, 650);
+    });
+    eventSource.on(event_types.USER_MESSAGE_RENDERED, () => {
+        ui.ensureStatusAtChatEnd();
     });
     eventSource.on(event_types.MESSAGE_SWIPED, () => {
         schedule({ generateMemory: true, generateStatus: true, reason: 'message_swiped' }, 500);

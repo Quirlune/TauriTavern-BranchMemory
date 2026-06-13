@@ -196,12 +196,15 @@
     white-space: pre-wrap;
 }
 
+.ttbm-warning {
+    color: #ffd28a;
+}
+
 #ttbm-status-host {
-    flex: 0 0 auto;
     width: 100%;
-    padding: 6px 10px calc(6px + var(--tt-ime-bottom, 0px));
+    padding: 8px 10px 14px;
     box-sizing: border-box;
-    z-index: 5;
+    scroll-margin-bottom: 18px;
 }
 
 #ttbm-status-host[hidden] {
@@ -210,18 +213,29 @@
 
 @media (max-width: 700px) {
     .ttbm-modal {
-        padding: 0;
-        align-items: end;
+        display: flex;
+        align-items: stretch;
+        padding: env(safe-area-inset-top, 0px) 0 0;
     }
 
     .ttbm-modal-panel {
         width: 100vw;
-        max-height: calc(var(--tt-base-viewport-height, 100vh) - var(--tt-inset-top, 0px));
-        border-radius: 14px 14px 0 0;
+        height: 100%;
+        max-height: none;
+        border-radius: 0;
     }
 
     .ttbm-modal-body {
-        padding: 10px 10px calc(20px + var(--tt-inset-bottom, 0px));
+        padding: 10px 10px max(24px, env(safe-area-inset-bottom, 0px));
+        overscroll-behavior: contain;
+        scrollbar-gutter: stable;
+        scroll-padding-bottom: 40vh;
+    }
+
+    .ttbm-modal input,
+    .ttbm-modal textarea,
+    .ttbm-modal select {
+        font-size: 16px;
     }
 
     .ttbm-section {

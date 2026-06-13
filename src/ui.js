@@ -61,8 +61,9 @@ function numberField(label, path, value, min = 0, max = 100000) {
 }
 
 export class SettingsUi {
-    constructor({ settings, onSettingsChanged, onRunNow }) {
+    constructor({ settings, getConnectionProfiles = () => [], onSettingsChanged, onRunNow }) {
         this.settings = settings;
+        this.getConnectionProfiles = getConnectionProfiles;
         this.onSettingsChanged = onSettingsChanged;
         this.onRunNow = onRunNow;
         this.stats = null;
@@ -124,7 +125,7 @@ export class SettingsUi {
         document.getElementById('ttbm-run-now').addEventListener('click', () => this.onRunNow());
         document.getElementById('ttbm-master-enabled').addEventListener('change', (event) => {
             this.settings.enabled = event.target.checked;
-            this.#changed();
+            this.#changed(true);
         });
 
         const modal = document.getElementById('ttbm-modal');
@@ -147,7 +148,7 @@ export class SettingsUi {
                 const list = readPath(this.settings, addEntry.dataset.addEntry);
                 list.push({ id: uniqueId('prompt'), title: '新条目', enabled: true, role: 'user', content: '' });
                 this.renderModal();
-                this.#changed();
+                this.#changed(true);
             }
 
             const addRule = event.target.closest('[data-add-rule]');
@@ -155,7 +156,7 @@ export class SettingsUi {
                 const list = readPath(this.settings, addRule.dataset.addRule);
                 list.push({ id: uniqueId('regex'), name: '新正则', enabled: true, pattern: '', flags: 'g', replacement: '' });
                 this.renderModal();
-                this.#changed();
+                this.#changed(true);
             }
 
             const card = event.target.closest('[data-list-path][data-index]');
@@ -165,15 +166,15 @@ export class SettingsUi {
             if (event.target.closest('.ttbm-remove-entry')) {
                 list.splice(index, 1);
                 this.renderModal();
-                this.#changed();
+                this.#changed(true);
             } else if (event.target.closest('.ttbm-move-up') && index > 0) {
                 [list[index - 1], list[index]] = [list[index], list[index - 1]];
                 this.renderModal();
-                this.#changed();
+                this.#changed(true);
             } else if (event.target.closest('.ttbm-move-down') && index < list.length - 1) {
                 [list[index + 1], list[index]] = [list[index], list[index + 1]];
                 this.renderModal();
-                this.#changed();
+                this.#changed(true);
             }
         });
 
@@ -188,7 +189,10 @@ export class SettingsUi {
             let value = target.type === 'checkbox' ? target.checked : target.value;
             if (target.type === 'number') value = Number(value);
             writePath(this.settings, path, value);
-            this.#changed();
+            this.#changed(event.type === 'change');
+            if (event.type === 'change' && path.endsWith('.api.mode')) {
+                this.renderModal();
+            }
             return;
         }
 
@@ -207,11 +211,11 @@ export class SettingsUi {
         if (target.classList.contains('ttbm-rule-enabled')) item.enabled = target.checked;
         if (target.classList.contains('ttbm-rule-pattern')) item.pattern = target.value;
         if (target.classList.contains('ttbm-rule-replacement')) item.replacement = target.value;
-        this.#changed();
+        this.#changed(event.type === 'change');
     }
 
-    #changed() {
-        this.onSettingsChanged(this.settings);
+    #changed(apply = false) {
+        this.onSettingsChanged(this.settings, { apply });
     }
 
     open() {
@@ -221,6 +225,7 @@ export class SettingsUi {
 
     close() {
         document.getElementById('ttbm-modal').hidden = true;
+        this.#changed(true);
     }
 
     renderModal() {
@@ -246,6 +251,7 @@ export class SettingsUi {
                 </div>
                 <p class="ttbm-hint">大总结为累计叠层；主对话只注入最新大总结和其后的阶段小总结。修改提示词或正则会自动形成新配方，不会误用旧结果。</p>
             </section>
+            ${this.#apiSection('记忆模型连接', 'memory.api', memory.api)}
             ${this.#regexSection('记忆输入正则', 'memory.inputRegex', memory.inputRegex, '先处理被送入模型的聊天文本。')}
             ${this.#promptSection('小总结提示词条目栈', 'memory.smallPromptEntries', memory.smallPromptEntries)}
             ${this.#promptSection('大总结提示词条目栈', 'memory.largePromptEntries', memory.largePromptEntries)}
@@ -284,6 +290,7 @@ export class SettingsUi {
                 </div>
                 <p class="ttbm-hint">状态栏调用与记忆调用完全分开。开启 HTML 渲染意味着你信任自己的提示词和模型输出。</p>
             </section>
+            ${this.#apiSection('状态栏模型连接', 'status.api', status.api)}
             ${this.#regexSection('状态栏输入正则', 'status.inputRegex', status.inputRegex, '先处理最近对话，再交给状态栏模型调用。')}
             ${this.#promptSection('状态栏提示词条目栈', 'status.promptEntries', status.promptEntries)}
             ${this.#regexSection('状态栏输出正则', 'status.outputRegex', status.outputRegex, '处理模型输出后再渲染。')}
@@ -331,6 +338,33 @@ export class SettingsUi {
         `;
     }
 
+    #apiSection(title, path, config) {
+        const profiles = this.getConnectionProfiles();
+        const profileOptions = profiles.map(profile => {
+            const selected = profile.id === config.connectionProfileId ? 'selected' : '';
+            const detail = [profile.api, profile.model].filter(Boolean).join(' / ');
+            return `<option value="${escapeHtml(profile.id)}" ${selected}>${escapeHtml(profile.name)}${detail ? ` · ${escapeHtml(detail)}` : ''}</option>`;
+        }).join('');
+        return `
+            <section class="ttbm-section">
+                <h3>${title}</h3>
+                <div class="ttbm-grid">
+                    <label>调用来源<select class="text_pole" data-setting="${path}.mode">
+                        ${option('current', '沿用当前聊天 API', config.mode)}
+                        ${option('connection_profile', '独立 Connection Manager 配置', config.mode)}
+                    </select></label>
+                    <label>独立连接配置<select class="text_pole" data-setting="${path}.connectionProfileId" ${config.mode === 'connection_profile' ? '' : 'disabled'}>
+                        <option value="">请选择 Chat Completion 配置</option>
+                        ${profileOptions}
+                    </select></label>
+                    <label class="ttbm-check"><input type="checkbox" data-setting="${path}.includePreset" ${config.includePreset !== false ? 'checked' : ''}>应用该连接配置的采样预设</label>
+                </div>
+                <p class="ttbm-hint">独立模式复用 Connection Manager 中保存的 Chat Completion 配置和密钥。记忆与状态栏可以选择不同配置，插件不会保存 API Key。</p>
+                ${profiles.length ? '' : '<p class="ttbm-warning">当前没有可用的 Chat Completion Connection Profile，请先在 Connection Manager 中创建。</p>'}
+            </section>
+        `;
+    }
+
     #regexSection(title, path, rules, hint) {
         return `
             <section class="ttbm-section">
@@ -352,17 +386,24 @@ export class SettingsUi {
         if (this.modalTab === 'runtime' && !document.getElementById('ttbm-modal').hidden) this.renderModal();
     }
 
+    ensureStatusAtChatEnd() {
+        const chat = document.getElementById('chat');
+        const host = document.getElementById('ttbm-status-host');
+        if (chat && host && (host.parentElement !== chat || chat.lastElementChild !== host)) {
+            chat.appendChild(host);
+        }
+    }
+
     renderStatus(content, statusSettings) {
         let host = document.getElementById('ttbm-status-host');
         const chat = document.getElementById('chat');
         if (!host) {
             host = document.createElement('div');
             host.id = 'ttbm-status-host';
+            host.className = 'ttbm-status-flow-item';
         }
-        if (chat?.parentElement && host.parentElement !== chat.parentElement) {
-            chat.insertAdjacentElement('afterend', host);
-        } else if (chat?.nextElementSibling !== host) {
-            chat?.insertAdjacentElement('afterend', host);
+        if (chat && (host.parentElement !== chat || chat.lastElementChild !== host)) {
+            chat.appendChild(host);
         }
 
         let style = document.getElementById('ttbm-custom-status-style');
