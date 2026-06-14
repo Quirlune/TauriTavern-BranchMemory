@@ -207,6 +207,42 @@ export function clampInteger(value, minimum, maximum, fallback) {
     return Math.min(maximum, Math.max(minimum, number));
 }
 
+export function statusInsertionIndex(messageCount, depth) {
+    const count = Math.max(0, Math.floor(Number(messageCount) || 0));
+    const resolvedDepth = Math.max(0, Math.floor(Number(depth) || 0));
+    return Math.max(0, count - resolvedDepth);
+}
+
+export class AssistantGenerationGate {
+    constructor() {
+        this.accepted = false;
+    }
+
+    start(type, dryRun = false) {
+        if (dryRun || type === 'quiet') {
+            return false;
+        }
+        this.accepted = false;
+        return true;
+    }
+
+    afterCommands(type, dryRun = false) {
+        if (dryRun || type === 'quiet' || type === 'impersonate') {
+            return false;
+        }
+        this.accepted = true;
+        return true;
+    }
+
+    shouldTrigger(type) {
+        return this.accepted && type !== 'first_message' && type !== 'impersonate';
+    }
+
+    reset() {
+        this.accepted = false;
+    }
+}
+
 export function uniqueId(prefix = 'item') {
     return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }

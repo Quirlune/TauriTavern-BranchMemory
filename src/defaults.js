@@ -74,6 +74,7 @@ export const DEFAULT_SETTINGS = {
     },
     status: {
         enabled: true,
+        renderDepth: 0,
         api: {
             mode: 'current',
             connectionProfileId: '',

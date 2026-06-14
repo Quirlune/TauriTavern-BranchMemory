@@ -22,6 +22,12 @@
     display: none !important;
 }
 
+html.ttbm-modal-open,
+body.ttbm-modal-open {
+    overflow: hidden !important;
+    overscroll-behavior: none;
+}
+
 .ttbm-modal {
     position: fixed;
     inset: 0;
@@ -213,9 +219,13 @@
 
 @media (max-width: 700px) {
     .ttbm-modal {
+        position: absolute;
         display: flex;
         align-items: stretch;
         padding: env(safe-area-inset-top, 0px) 0 0;
+        height: var(--tt-base-viewport-height, 100vh);
+        min-height: var(--tt-base-viewport-height, 100vh);
+        max-height: var(--tt-base-viewport-height, 100vh);
     }
 
     .ttbm-modal-panel {
@@ -229,7 +239,8 @@
         padding: 10px 10px max(24px, env(safe-area-inset-bottom, 0px));
         overscroll-behavior: contain;
         scrollbar-gutter: stable;
-        scroll-padding-bottom: 40vh;
+        scroll-padding: 0;
+        overflow-anchor: none;
     }
 
     .ttbm-modal input,

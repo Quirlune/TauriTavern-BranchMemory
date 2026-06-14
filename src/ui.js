@@ -1,4 +1,4 @@
-import { escapeHtml, uniqueId } from './core.js';
+import { escapeHtml, statusInsertionIndex, uniqueId } from './core.js';
 
 function readPath(target, path) {
     return path.split('.').reduce((value, key) => value?.[key], target);
@@ -219,12 +219,16 @@ export class SettingsUi {
     }
 
     open() {
+        document.documentElement.classList.add('ttbm-modal-open');
+        document.body.classList.add('ttbm-modal-open');
         document.getElementById('ttbm-modal').hidden = false;
         this.renderModal();
     }
 
     close() {
         document.getElementById('ttbm-modal').hidden = true;
+        document.documentElement.classList.remove('ttbm-modal-open');
+        document.body.classList.remove('ttbm-modal-open');
         this.#changed(true);
     }
 
@@ -286,9 +290,10 @@ export class SettingsUi {
                     <label class="ttbm-check"><input type="checkbox" data-setting="status.enabled" ${status.enabled ? 'checked' : ''}>每次 AI 输出后独立更新</label>
                     ${numberField('读取最近 N 个用户楼层', 'status.contextFloors', status.contextFloors, 1, 1000)}
                     ${numberField('单次最大输出 tokens', 'status.responseLength', status.responseLength, 32, 32000)}
+                    ${numberField('显示深度（0 = 最后一条消息后）', 'status.renderDepth', status.renderDepth, 0, 100000)}
                     <label class="ttbm-check"><input type="checkbox" data-setting="status.renderAsHtml" ${status.renderAsHtml ? 'checked' : ''}>把状态输出按 HTML 渲染</label>
                 </div>
-                <p class="ttbm-hint">状态栏调用与记忆调用完全分开。开启 HTML 渲染意味着你信任自己的提示词和模型输出。</p>
+                <p class="ttbm-hint">状态栏只在一轮 AI 回复完成后调用。显示深度按当前已加载消息从末尾倒数：0 在最后，1 插在最后一条消息前。开启 HTML 渲染意味着你信任自己的提示词和模型输出。</p>
             </section>
             ${this.#apiSection('状态栏模型连接', 'status.api', status.api)}
             ${this.#regexSection('状态栏输入正则', 'status.inputRegex', status.inputRegex, '先处理最近对话，再交给状态栏模型调用。')}
@@ -386,10 +391,20 @@ export class SettingsUi {
         if (this.modalTab === 'runtime' && !document.getElementById('ttbm-modal').hidden) this.renderModal();
     }
 
-    ensureStatusAtChatEnd() {
+    ensureStatusPosition() {
         const chat = document.getElementById('chat');
         const host = document.getElementById('ttbm-status-host');
-        if (chat && host && (host.parentElement !== chat || chat.lastElementChild !== host)) {
+        if (!chat || !host) {
+            return;
+        }
+        const messages = Array.from(chat.children).filter(element => element !== host && element.classList.contains('mes'));
+        const insertionIndex = statusInsertionIndex(messages.length, this.settings.status.renderDepth);
+        const before = messages[insertionIndex] || null;
+        if (before) {
+            if (host.parentElement !== chat || host.nextElementSibling !== before) {
+                chat.insertBefore(host, before);
+            }
+        } else if (host.parentElement !== chat || chat.lastElementChild !== host) {
             chat.appendChild(host);
         }
     }
@@ -402,9 +417,8 @@ export class SettingsUi {
             host.id = 'ttbm-status-host';
             host.className = 'ttbm-status-flow-item';
         }
-        if (chat && (host.parentElement !== chat || chat.lastElementChild !== host)) {
-            chat.appendChild(host);
-        }
+        if (chat && host.parentElement !== chat) chat.appendChild(host);
+        this.ensureStatusPosition();
 
         let style = document.getElementById('ttbm-custom-status-style');
         if (!style) {

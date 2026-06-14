@@ -7,7 +7,7 @@ import {
     setExtensionPrompt
 } from '/script.js';
 import { ConnectionManagerRequestService } from '/scripts/extensions/shared.js';
-import { clampInteger, deepMerge } from './core.js';
+import { AssistantGenerationGate, clampInteger, deepMerge } from './core.js';
 import { DEFAULT_SETTINGS } from './defaults.js';
 import { BranchMemoryEngine } from './engine.js';
 import { StorageGateway, waitForTauriHost } from './storage.js';
@@ -25,6 +25,7 @@ function normalizeSettings(settings) {
     settings.memory.injection.depth = clampInteger(settings.memory.injection.depth, 0, 100, 4);
     settings.status.contextFloors = clampInteger(settings.status.contextFloors, 1, 1000, 6);
     settings.status.responseLength = clampInteger(settings.status.responseLength, 32, 32000, 350);
+    settings.status.renderDepth = clampInteger(settings.status.renderDepth, 0, 100000, 0);
     return settings;
 }
 
@@ -62,6 +63,8 @@ export async function bootstrapExtension() {
     let pendingRefresh = { generateMemory: false, generateStatus: false, reason: 'scheduled' };
     let queue = Promise.resolve();
     let engine;
+    const generationGate = new AssistantGenerationGate();
+    let generationResetTimer = null;
 
     const enqueue = (options) => {
         queue = queue
@@ -152,28 +155,47 @@ export async function bootstrapExtension() {
     eventSource.on(event_types.CHAT_CHANGED, () => {
         schedule({ generateMemory: false, generateStatus: false, reason: 'chat_changed' }, 250);
     });
+    eventSource.on(event_types.GENERATION_AFTER_COMMANDS, (type, _options, dryRun) => {
+        if (generationGate.afterCommands(type, dryRun)) clearTimeout(generationResetTimer);
+    });
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, (_messageId, type) => {
-        ui.ensureStatusAtChatEnd();
+        ui.ensureStatusPosition();
         if (type === 'first_message') {
             schedule({ generateMemory: false, generateStatus: false, reason: 'first_message' }, 300);
             return;
         }
+        if (!generationGate.shouldTrigger(type)) {
+            return;
+        }
         schedule({ generateMemory: true, generateStatus: true, reason: 'assistant_output' }, 650);
+        generationResetTimer = setTimeout(() => {
+            generationGate.reset();
+        }, 1200);
     });
     eventSource.on(event_types.USER_MESSAGE_RENDERED, () => {
-        ui.ensureStatusAtChatEnd();
+        ui.ensureStatusPosition();
     });
     eventSource.on(event_types.MESSAGE_SWIPED, () => {
-        schedule({ generateMemory: true, generateStatus: true, reason: 'message_swiped' }, 500);
+        ui.ensureStatusPosition();
+        schedule({ generateMemory: true, generateStatus: false, reason: 'message_swiped' }, 500);
     });
     eventSource.on(event_types.MESSAGE_EDITED, () => {
-        schedule({ generateMemory: true, generateStatus: true, reason: 'message_edited' }, 500);
+        ui.ensureStatusPosition();
+        schedule({ generateMemory: true, generateStatus: false, reason: 'message_edited' }, 500);
     });
     eventSource.on(event_types.MESSAGE_DELETED, () => {
-        schedule({ generateMemory: false, generateStatus: true, reason: 'message_deleted' }, 500);
+        ui.ensureStatusPosition();
+        schedule({ generateMemory: false, generateStatus: false, reason: 'message_deleted' }, 500);
     });
-    eventSource.on(event_types.GENERATION_STARTED, async () => {
+    eventSource.on(event_types.GENERATION_STARTED, async (type, _options, dryRun) => {
+        if (!generationGate.start(type, dryRun)) {
+            return;
+        }
         await enqueue({ generateMemory: false, generateStatus: false, reason: 'before_generation' });
+    });
+    eventSource.on(event_types.GENERATION_STOPPED, () => {
+        generationGate.reset();
+        clearTimeout(generationResetTimer);
     });
 
     schedule({ generateMemory: false, generateStatus: false, reason: 'startup' }, 100);

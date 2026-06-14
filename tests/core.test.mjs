@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+    AssistantGenerationGate,
     applyRegexRules,
     boundaries,
     buildSnapshot,
     promptEntriesToMessages,
     selectActiveMemory,
+    statusInsertionIndex,
     transcriptForFloorRange
 } from '../src/core.js';
 
@@ -56,4 +58,23 @@ test('active memory uses the latest large summary and only later small summaries
     assert.equal(result.large.content, 'L32');
     assert.deepEqual(result.small.map(item => item.endFloor), [40]);
     assert.deepEqual(boundaries(8, 35), [8, 16, 24, 32]);
+});
+
+test('status insertion depth counts messages backward from the end', () => {
+    assert.equal(statusInsertionIndex(10, 0), 10);
+    assert.equal(statusInsertionIndex(10, 1), 9);
+    assert.equal(statusInsertionIndex(10, 3), 7);
+    assert.equal(statusInsertionIndex(2, 99), 0);
+});
+
+test('status generation ignores slash-command starts without after-commands acceptance', () => {
+    const gate = new AssistantGenerationGate();
+    assert.equal(gate.start('normal', false), true);
+    assert.equal(gate.shouldTrigger('normal'), false);
+    assert.equal(gate.afterCommands('normal', false), true);
+    assert.equal(gate.shouldTrigger('normal'), true);
+    gate.reset();
+    assert.equal(gate.start('quiet', false), false);
+    assert.equal(gate.afterCommands('quiet', false), false);
+    assert.equal(gate.shouldTrigger('quiet'), false);
 });
