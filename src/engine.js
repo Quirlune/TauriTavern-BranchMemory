@@ -3,6 +3,7 @@ import {
     boundaries,
     getFloor,
     makeCacheKey,
+    processStatusOutput,
     promptEntriesToMessages,
     recipeHash,
     renderTemplate,
@@ -65,7 +66,8 @@ export class BranchMemoryEngine {
     async refresh({ generateMemory = false, generateStatus = false, reason = 'refresh' } = {}) {
         const settings = this.getSettings();
         if (!settings.enabled) {
-            this.applyInjection('', settings.memory.injection);
+            this.applyInjection('memory', '', settings.memory.injection);
+            this.applyInjection('status', '', settings.status.injection);
             this.renderStatus('', settings.status);
             return;
         }
@@ -146,7 +148,6 @@ export class BranchMemoryEngine {
                 responseLength: settings.status.responseLength,
                 api: settings.status.api,
                 inputRegex: settings.status.inputRegex,
-                outputRegex: settings.status.outputRegex,
                 promptEntries: settings.status.promptEntries
             });
             const statusKey = makeCacheKey({
@@ -165,13 +166,28 @@ export class BranchMemoryEngine {
                     recipe: statusRecipe,
                     key: statusKey,
                     memoryText,
-                    previousStatus: runtime.status?.content || '',
+                    previousStatus: this.#statusOutputs(runtime.status, settings.status).renderContent,
                     identity
                 });
             }
         }
 
-        this.renderStatus(statusRecord?.content || runtime.status?.content || '', settings.status);
+        const effectiveStatus = statusRecord || runtime.status || null;
+        const statusOutputs = this.#statusOutputs(effectiveStatus, settings.status);
+        this.renderStatus(statusOutputs.renderContent, settings.status);
+        this.#applyStatusInjection(settings, statusOutputs.injectionContent);
+
+        if (effectiveStatus) {
+            statusRecord = {
+                ...effectiveStatus,
+                content: statusOutputs.renderContent,
+                injectionContent: statusOutputs.injectionContent
+            };
+            if (statusOutputs.rawContent !== null) {
+                statusRecord.version = Math.max(2, Number(effectiveStatus.version) || 1);
+                statusRecord.rawContent = statusOutputs.rawContent;
+            }
+        }
 
         const runtimeValue = {
             version: 1,
@@ -181,7 +197,7 @@ export class BranchMemoryEngine {
             eligibleFloor,
             activeLarge: active.large || null,
             activeSmall: active.small,
-            status: statusRecord || runtime.status || null,
+            status: statusRecord,
             updatedAt: new Date().toISOString(),
             reason
         };
@@ -281,17 +297,20 @@ export class BranchMemoryEngine {
             chat: transcriptForFloorRange(snapshot, startFloor, snapshot.totalFloors, settings.status.inputRegex)
         };
         const prompt = promptEntriesToMessages(settings.status.promptEntries, values);
-        const content = await this.#runModel(prompt, settings.status.responseLength, settings.status.outputRegex, '状态栏', settings.status.api);
+        const rawContent = await this.#runModelRaw(prompt, settings.status.responseLength, '状态栏', settings.status.api);
+        const outputs = processStatusOutput(rawContent, settings.status.outputRegex, settings.status.injection.outputRegex);
         if (!this.#isCurrent(identity)) return null;
 
         const record = {
-            version: 1,
+            version: 2,
             kind: 'status',
             scopeHash,
             recipe,
             floor: snapshot.totalFloors,
             anchorChain: snapshot.chain,
-            content,
+            rawContent: outputs.rawContent,
+            content: outputs.renderContent,
+            injectionContent: outputs.injectionContent,
             createdAt: new Date().toISOString()
         };
         await this.storage.setStatus(key, record);
@@ -299,20 +318,29 @@ export class BranchMemoryEngine {
     }
 
     async #runModel(prompt, responseLength, outputRegex, label, apiConfig) {
-        if (!prompt.length) {
-            throw new Error(`${label}没有启用的提示词条目。`);
-        }
-        const raw = await this.generate({ prompt, responseLength, apiConfig });
-        const content = applyRegexRules(String(raw ?? '').trim(), outputRegex).trim();
+        const raw = await this.#runModelRaw(prompt, responseLength, label, apiConfig);
+        const content = applyRegexRules(raw, outputRegex).trim();
         if (!content) {
             throw new Error(`${label}经过输出正则处理后为空。`);
         }
         return content;
     }
 
+    async #runModelRaw(prompt, responseLength, label, apiConfig) {
+        if (!prompt.length) {
+            throw new Error(`${label}没有启用的提示词条目。`);
+        }
+        const raw = await this.generate({ prompt, responseLength, apiConfig });
+        const content = String(raw ?? '').trim();
+        if (!content) {
+            throw new Error(`${label}模型输出为空。`);
+        }
+        return content;
+    }
+
     #applyMemoryInjection(settings, active) {
         if (!settings.memory.enabled || !settings.memory.injection.enabled) {
-            this.applyInjection('', settings.memory.injection);
+            this.applyInjection('memory', '', settings.memory.injection);
             return '';
         }
         const largeMemory = active.large ? `[累计大总结 · 至第 ${active.large.endFloor} 楼]\n${active.large.content}` : '';
@@ -322,7 +350,29 @@ export class BranchMemoryEngine {
             small_memory: smallMemory,
             memory: [largeMemory, smallMemory].filter(Boolean).join('\n\n')
         }).trim();
-        this.applyInjection(text, settings.memory.injection);
+        this.applyInjection('memory', text, settings.memory.injection);
+        return text;
+    }
+
+    #statusOutputs(record, settings) {
+        if (!record) return { rawContent: null, renderContent: '', injectionContent: '' };
+        if (record.rawContent === undefined || record.rawContent === null) {
+            return {
+                rawContent: null,
+                renderContent: String(record.content || '').trim(),
+                injectionContent: ''
+            };
+        }
+        return processStatusOutput(record.rawContent, settings.outputRegex, settings.injection.outputRegex);
+    }
+
+    #applyStatusInjection(settings, statusContent) {
+        if (!settings.status.enabled || !settings.status.injection.enabled || !statusContent) {
+            this.applyInjection('status', '', settings.status.injection);
+            return '';
+        }
+        const text = renderTemplate(settings.status.injection.template, { status: statusContent }).trim();
+        this.applyInjection('status', text, settings.status.injection);
         return text;
     }
 

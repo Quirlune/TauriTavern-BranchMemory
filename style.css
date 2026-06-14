@@ -206,6 +206,87 @@ body.ttbm-modal-open {
     color: #ffd28a;
 }
 
+.ttbm-monitor-head {
+    position: sticky;
+    top: -14px;
+    z-index: 2;
+    backdrop-filter: blur(12px);
+}
+
+.ttbm-monitor-state {
+    font-size: 12px;
+    opacity: .72;
+}
+
+.ttbm-monitor-live {
+    color: #72dfa0;
+    opacity: 1;
+}
+
+.ttbm-monitor-actions {
+    justify-content: flex-start;
+    margin: 0 0 8px;
+}
+
+.ttbm-monitor-list {
+    display: grid;
+    gap: 8px;
+}
+
+.ttbm-monitor-event {
+    border: 1px solid color-mix(in srgb, var(--SmartThemeBodyColor) 14%, transparent);
+    border-radius: 9px;
+    background: rgba(0, 0, 0, .14);
+    overflow: hidden;
+}
+
+.ttbm-monitor-event summary {
+    display: grid;
+    grid-template-columns: max-content max-content minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    padding: 9px 11px;
+    cursor: pointer;
+}
+
+.ttbm-monitor-event summary strong {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.ttbm-monitor-event time,
+.ttbm-monitor-channel {
+    font-size: 11px;
+    opacity: .65;
+}
+
+.ttbm-monitor-channel {
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 18%, transparent);
+}
+
+.ttbm-monitor-error {
+    border-color: color-mix(in srgb, #e06b6b 55%, transparent);
+}
+
+.ttbm-monitor-warn {
+    border-color: color-mix(in srgb, #e0b66b 45%, transparent);
+}
+
+.ttbm-monitor-json {
+    max-height: min(62vh, 720px);
+    margin: 0;
+    padding: 12px;
+    overflow: auto;
+    border-top: 1px solid color-mix(in srgb, var(--SmartThemeBodyColor) 10%, transparent);
+    background: rgba(0, 0, 0, .24);
+    color: inherit;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
 #ttbm-status-host {
     width: 100%;
     padding: 8px 10px 14px;
@@ -251,6 +332,18 @@ body.ttbm-modal-open {
 
     .ttbm-section {
         padding: 10px;
+    }
+
+    .ttbm-monitor-head {
+        top: -10px;
+    }
+
+    .ttbm-monitor-event summary {
+        grid-template-columns: max-content minmax(0, 1fr);
+    }
+
+    .ttbm-monitor-event summary strong {
+        grid-column: 1 / -1;
     }
 
     .ttbm-card-actions .menu_button {

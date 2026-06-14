@@ -60,9 +60,25 @@ function numberField(label, path, value, min = 0, max = 100000) {
     return `<label>${label}<input class="text_pole" type="number" min="${min}" max="${max}" data-setting="${path}" value="${value}"></label>`;
 }
 
+function monitorRecordHtml(record) {
+    const time = new Date(record.timestamp).toLocaleTimeString();
+    return `
+        <details class="ttbm-monitor-event ttbm-monitor-${escapeHtml(record.level)}" data-monitor-id="${escapeHtml(record.id)}">
+            <summary>
+                <time>${escapeHtml(time)}</time>
+                <span class="ttbm-monitor-channel">${escapeHtml(record.channel)}</span>
+                <strong>${escapeHtml(record.type)}</strong>
+            </summary>
+            <pre class="ttbm-monitor-json">展开后加载完整事件数据</pre>
+        </details>
+    `;
+}
+
 export class SettingsUi {
-    constructor({ settings, getConnectionProfiles = () => [], onSettingsChanged, onRunNow }) {
+    constructor({ settings, monitor, getConnectionProfiles = () => [], onSettingsChanged, onRunNow }) {
         this.settings = settings;
+        this.monitor = monitor;
+        this.monitorState = monitor?.snapshot() || { active: false, records: [], maxEvents: 300 };
         this.getConnectionProfiles = getConnectionProfiles;
         this.onSettingsChanged = onSettingsChanged;
         this.onRunNow = onRunNow;
@@ -91,6 +107,7 @@ export class SettingsUi {
                     <div class="ttbm-inline-actions">
                         <button id="ttbm-open-settings" class="menu_button" type="button">详细设置</button>
                         <button id="ttbm-run-now" class="menu_button" type="button">立即同步</button>
+                        <button id="ttbm-open-monitor" class="menu_button" type="button">调用监控</button>
                     </div>
                     <small>楼层只计算 user 消息；AI 消息不计楼。摘要以消息链锚点跨分支复用。</small>
                 </div>
@@ -113,6 +130,7 @@ export class SettingsUi {
                         <button class="menu_button" data-tab="memory" type="button">记忆模块</button>
                         <button class="menu_button" data-tab="status" type="button">状态栏模块</button>
                         <button class="menu_button" data-tab="runtime" type="button">运行状态</button>
+                        <button class="menu_button" data-tab="monitor" type="button">调用监控</button>
                     </nav>
                     <div id="ttbm-modal-body" class="ttbm-modal-body"></div>
                 </section>
@@ -123,6 +141,11 @@ export class SettingsUi {
     #bindEvents() {
         document.getElementById('ttbm-open-settings').addEventListener('click', () => this.open());
         document.getElementById('ttbm-run-now').addEventListener('click', () => this.onRunNow());
+        document.getElementById('ttbm-open-monitor').addEventListener('click', () => {
+            this.monitor?.start();
+            this.modalTab = 'monitor';
+            this.open();
+        });
         document.getElementById('ttbm-master-enabled').addEventListener('change', (event) => {
             this.settings.enabled = event.target.checked;
             this.#changed(true);
@@ -136,11 +159,29 @@ export class SettingsUi {
             const tab = event.target.closest('[data-tab]');
             if (tab) {
                 this.modalTab = tab.dataset.tab;
+                if (this.modalTab === 'monitor') this.monitor?.start();
                 this.renderModal();
             }
 
             if (event.target.closest('#ttbm-runtime-run')) {
                 this.onRunNow();
+            }
+
+            const monitorAction = event.target.closest('[data-monitor-action]')?.dataset.monitorAction;
+            if (monitorAction === 'toggle') {
+                this.monitorState.active ? this.monitor?.stop() : this.monitor?.start();
+                this.renderModal();
+            }
+            if (monitorAction === 'clear') {
+                this.monitor?.clear();
+                this.renderModal();
+            }
+            if (monitorAction === 'expand' || monitorAction === 'collapse') {
+                const open = monitorAction === 'expand';
+                document.querySelectorAll('#ttbm-monitor-list details').forEach(details => {
+                    details.open = open;
+                    if (open) this.#populateMonitorDetail(details);
+                });
             }
 
             const addEntry = event.target.closest('[data-add-entry]');
@@ -180,6 +221,10 @@ export class SettingsUi {
 
         modal.addEventListener('input', (event) => this.#readInput(event));
         modal.addEventListener('change', (event) => this.#readInput(event));
+        modal.addEventListener('toggle', (event) => {
+            const details = event.target.closest?.('[data-monitor-id]');
+            if (details?.open) this.#populateMonitorDetail(details);
+        }, true);
     }
 
     #readInput(event) {
@@ -239,6 +284,7 @@ export class SettingsUi {
         if (this.modalTab === 'memory') body.innerHTML = this.#memoryHtml();
         if (this.modalTab === 'status') body.innerHTML = this.#statusHtml();
         if (this.modalTab === 'runtime') body.innerHTML = this.#runtimeHtml();
+        if (this.modalTab === 'monitor') body.innerHTML = this.#monitorHtml();
     }
 
     #memoryHtml() {
@@ -298,7 +344,27 @@ export class SettingsUi {
             ${this.#apiSection('状态栏模型连接', 'status.api', status.api)}
             ${this.#regexSection('状态栏输入正则', 'status.inputRegex', status.inputRegex, '先处理最近对话，再交给状态栏模型调用。')}
             ${this.#promptSection('状态栏提示词条目栈', 'status.promptEntries', status.promptEntries)}
-            ${this.#regexSection('状态栏输出正则', 'status.outputRegex', status.outputRegex, '处理模型输出后再渲染。')}
+            ${this.#regexSection('状态栏渲染输出正则', 'status.outputRegex', status.outputRegex, '直接处理状态模型原始输出，仅用于界面渲染。')}
+            <section class="ttbm-section">
+                <h3>正文生成状态注入</h3>
+                <div class="ttbm-grid">
+                    <label class="ttbm-check"><input type="checkbox" data-setting="status.injection.enabled" ${status.injection.enabled ? 'checked' : ''}>注入下一轮正文生成</label>
+                    <label>位置<select class="text_pole" data-setting="status.injection.position">
+                        ${option('in_chat', '聊天内指定深度', status.injection.position)}
+                        ${option('in_prompt', '故事字符串之后', status.injection.position)}
+                        ${option('before_prompt', '故事字符串之前', status.injection.position)}
+                    </select></label>
+                    ${numberField('深度', 'status.injection.depth', status.injection.depth, 0, 100)}
+                    <label>角色<select class="text_pole" data-setting="status.injection.role">
+                        ${option('system', 'system', status.injection.role)}
+                        ${option('user', 'user', status.injection.role)}
+                        ${option('assistant', 'assistant', status.injection.role)}
+                    </select></label>
+                </div>
+                <label>注入模板<textarea class="text_pole" rows="7" data-setting="status.injection.template">${escapeHtml(status.injection.template)}</textarea></label>
+                <p class="ttbm-hint">模板宏：{{status}}。这里读取状态模型的原始输出，不会复用上方渲染正则的处理结果。</p>
+            </section>
+            ${this.#regexSection('正文注入输出正则', 'status.injection.outputRegex', status.injection.outputRegex, '直接处理状态模型原始输出，仅用于送入下一轮正文生成。')}
             <section class="ttbm-section">
                 <h3>状态栏渲染</h3>
                 <label>HTML 模板<textarea class="text_pole" rows="7" data-setting="status.htmlTemplate">${escapeHtml(status.htmlTemplate)}</textarea></label>
@@ -329,6 +395,28 @@ export class SettingsUi {
             <section class="ttbm-section">
                 <h3>分支复用说明</h3>
                 <p>每条消息都会进入一条累计链指纹。分支前的消息链完全相同，因此旧摘要可以直接命中；分叉后的链会改变，只重算受影响的阶段。聊天文件名和当前绝对楼层不会被当成唯一依据。</p>
+            </section>
+        `;
+    }
+
+    #monitorHtml() {
+        const state = this.monitorState;
+        return `
+            <section class="ttbm-section ttbm-monitor-head">
+                <div class="ttbm-section-head">
+                    <h3>全局调用监控</h3>
+                    <span id="ttbm-monitor-state" class="ttbm-monitor-state ${state.active ? 'ttbm-monitor-live' : ''}">${state.active ? '记录中' : '已暂停'} · ${state.records.length}/${state.maxEvents}</span>
+                </div>
+                <div class="ttbm-card-actions ttbm-monitor-actions">
+                    <button class="menu_button" type="button" data-monitor-action="toggle">${state.active ? '暂停监控' : '继续监控'}</button>
+                    <button class="menu_button" type="button" data-monitor-action="clear">清空</button>
+                    <button class="menu_button" type="button" data-monitor-action="expand">全部展开</button>
+                    <button class="menu_button" type="button" data-monitor-action="collapse">全部收起</button>
+                </div>
+                <p class="ttbm-hint">同时记录生成生命周期、最终 prompt/采样参数以及底层 fetch/XHR 请求与响应。Authorization、API Key、token、password、secret、cookie 等字段会递归脱敏。流式响应只记录请求与响应头，正文由生成事件反映。</p>
+            </section>
+            <section id="ttbm-monitor-list" class="ttbm-monitor-list">
+                ${state.records.map(monitorRecordHtml).join('') || '<p class="ttbm-hint">尚无事件。保持监控开启后执行正文生成或插件调用。</p>'}
             </section>
         `;
     }
@@ -383,6 +471,37 @@ export class SettingsUi {
     updateStats(stats) {
         this.stats = stats;
         if (this.modalTab === 'runtime' && !document.getElementById('ttbm-modal').hidden) this.renderModal();
+    }
+
+    updateMonitor(state) {
+        this.monitorState = state;
+        const modal = document.getElementById('ttbm-modal');
+        if (this.modalTab !== 'monitor' || !modal || modal.hidden) return;
+        if (state.cleared) {
+            this.renderModal();
+            return;
+        }
+        const status = document.getElementById('ttbm-monitor-state');
+        if (status) {
+            status.textContent = `${state.active ? '记录中' : '已暂停'} · ${state.records.length}/${state.maxEvents}`;
+            status.classList.toggle('ttbm-monitor-live', state.active);
+        }
+        if (!state.record) return;
+        const list = document.getElementById('ttbm-monitor-list');
+        if (!list) return;
+        if (!list.querySelector('[data-monitor-id]')) list.innerHTML = '';
+        list.insertAdjacentHTML('beforeend', monitorRecordHtml(state.record));
+        while (list.querySelectorAll('[data-monitor-id]').length > state.maxEvents) {
+            list.querySelector('[data-monitor-id]')?.remove();
+        }
+    }
+
+    #populateMonitorDetail(details) {
+        const pre = details.querySelector('.ttbm-monitor-json');
+        if (!pre || pre.dataset.loaded === 'true') return;
+        const record = this.monitor?.getRecord(details.dataset.monitorId);
+        pre.textContent = record ? JSON.stringify(record.details, null, 2) : '事件已从内存队列中移除。';
+        pre.dataset.loaded = 'true';
     }
 
     showError(error) {

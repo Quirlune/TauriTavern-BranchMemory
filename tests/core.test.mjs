@@ -5,11 +5,13 @@ import {
     applyRegexRules,
     boundaries,
     buildSnapshot,
+    processStatusOutput,
     promptEntriesToMessages,
     selectActiveMemory,
     statusInsertionIndex,
     transcriptForFloorRange
 } from '../src/core.js';
+import { sanitizeMonitorValue } from '../src/monitor.js';
 
 const messages = [
     { is_user: false, name: 'AI', mes: 'hello', send_date: '0' },
@@ -77,4 +79,33 @@ test('status generation ignores slash-command starts without after-commands acce
     assert.equal(gate.start('quiet', false), false);
     assert.equal(gate.afterCommands('quiet', false), false);
     assert.equal(gate.shouldTrigger('quiet'), false);
+});
+
+test('status render and chat injection regexes independently process the raw model output', () => {
+    const output = processStatusOutput(
+        '<status>HP=9</status><internal>hidden</internal>',
+        [{ enabled: true, pattern: '<internal>[\\s\\S]*?<\\/internal>', flags: 'g', replacement: '' }],
+        [{ enabled: true, pattern: '^[\\s\\S]*?<status>([\\s\\S]*?)<\\/status>[\\s\\S]*$', flags: '', replacement: '$1' }]
+    );
+    assert.equal(output.rawContent, '<status>HP=9</status><internal>hidden</internal>');
+    assert.equal(output.renderContent, '<status>HP=9</status>');
+    assert.equal(output.injectionContent, 'HP=9');
+});
+
+test('request monitor redacts credentials without hiding generation parameters', () => {
+    const sanitized = sanitizeMonitorValue({
+        api_key: 'sk-secret',
+        authorization: 'Bearer abc123',
+        max_tokens: 900,
+        temperature: 0.72,
+        nested: { proxy_password: 'password', prompt: 'hello', secret_id: 'profile-secret-3', auth_mode: 'oauth' }
+    });
+    assert.equal(sanitized.api_key, '[REDACTED]');
+    assert.equal(sanitized.authorization, '[REDACTED]');
+    assert.equal(sanitized.nested.proxy_password, '[REDACTED]');
+    assert.equal(sanitized.max_tokens, 900);
+    assert.equal(sanitized.temperature, 0.72);
+    assert.equal(sanitized.nested.prompt, 'hello');
+    assert.equal(sanitized.nested.secret_id, 'profile-secret-3');
+    assert.equal(sanitized.nested.auth_mode, 'oauth');
 });

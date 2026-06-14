@@ -10,11 +10,16 @@ import { ConnectionManagerRequestService } from '/scripts/extensions/shared.js';
 import { AssistantGenerationGate, clampInteger, deepMerge } from './core.js';
 import { DEFAULT_SETTINGS } from './defaults.js';
 import { BranchMemoryEngine } from './engine.js';
+import { RequestMonitor } from './monitor.js';
 import { StorageGateway, waitForTauriHost } from './storage.js';
 import { SettingsUi } from './ui.js';
 
-const INJECTION_KEY = 'TT_BRANCH_MEMORY_V1';
+const INJECTION_KEYS = {
+    memory: 'TT_BRANCH_MEMORY_V1',
+    status: 'TT_BRANCH_STATUS_V1'
+};
 let activeStorage = null;
+let activeMonitor = null;
 
 function normalizeSettings(settings) {
     settings.memory.smallEvery = clampInteger(settings.memory.smallEvery, 1, 100000, 8);
@@ -26,10 +31,11 @@ function normalizeSettings(settings) {
     settings.status.contextFloors = clampInteger(settings.status.contextFloors, 1, 1000, 6);
     settings.status.responseLength = clampInteger(settings.status.responseLength, 32, 32000, 350);
     settings.status.renderDepth = clampInteger(settings.status.renderDepth, 0, 100000, 0);
+    settings.status.injection.depth = clampInteger(settings.status.injection.depth, 0, 100, 4);
     return settings;
 }
 
-function applyInjection(text, config) {
+function applyInjection(channel, text, config) {
     const positions = {
         in_chat: extension_prompt_types.IN_CHAT,
         in_prompt: extension_prompt_types.IN_PROMPT,
@@ -41,7 +47,7 @@ function applyInjection(text, config) {
         assistant: extension_prompt_roles.ASSISTANT
     };
     setExtensionPrompt(
-        INJECTION_KEY,
+        INJECTION_KEYS[channel],
         text || '',
         positions[config.position] ?? extension_prompt_types.IN_CHAT,
         Number(config.depth) || 0,
@@ -51,6 +57,7 @@ function applyInjection(text, config) {
 }
 
 export async function bootstrapExtension() {
+    activeMonitor?.stop();
     const host = await waitForTauriHost();
     const storage = new StorageGateway(host);
     activeStorage = storage;
@@ -63,8 +70,15 @@ export async function bootstrapExtension() {
     let pendingRefresh = { generateMemory: false, generateStatus: false, reason: 'scheduled' };
     let queue = Promise.resolve();
     let engine;
+    let ui;
     const generationGate = new AssistantGenerationGate();
     let generationResetTimer = null;
+    const monitor = new RequestMonitor({
+        eventSource,
+        eventTypes: event_types,
+        onChange: state => ui?.updateMonitor(state)
+    });
+    activeMonitor = monitor;
 
     const enqueue = (options) => {
         queue = queue
@@ -100,8 +114,9 @@ export async function bootstrapExtension() {
         }
     };
 
-    const ui = new SettingsUi({
+    ui = new SettingsUi({
         settings,
+        monitor,
         getConnectionProfiles,
         onSettingsChanged: (_settings, { apply = false } = {}) => {
             normalizeSettings(settings);
@@ -203,10 +218,14 @@ export async function bootstrapExtension() {
 }
 
 export async function cleanExtensionData() {
+    activeMonitor?.stop();
+    activeMonitor = null;
     const host = await waitForTauriHost();
     const storage = activeStorage || new StorageGateway(host);
     await storage.cleanAll();
-    setExtensionPrompt(INJECTION_KEY, '', extension_prompt_types.IN_CHAT, 0, false, extension_prompt_roles.SYSTEM);
+    for (const key of Object.values(INJECTION_KEYS)) {
+        setExtensionPrompt(key, '', extension_prompt_types.IN_CHAT, 0, false, extension_prompt_roles.SYSTEM);
+    }
     document.getElementById('ttbm-status-host')?.remove();
     document.getElementById('ttbm-custom-status-style')?.remove();
 }

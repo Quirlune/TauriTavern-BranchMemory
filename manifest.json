@@ -6,7 +6,7 @@
   "js": "index.js",
   "css": "style.css",
   "author": "Codex",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "TauriTavern branch-aware hierarchical memory and independently generated status bar.",
   "homePage": "https://tauritavern.github.io/api/",
   "auto_update": false,

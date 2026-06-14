@@ -163,6 +163,15 @@ export function applyRegexRules(input, rules = []) {
     return output;
 }
 
+export function processStatusOutput(rawOutput, renderRules = [], injectionRules = []) {
+    const rawContent = String(rawOutput ?? '').trim();
+    return {
+        rawContent,
+        renderContent: applyRegexRules(rawContent, renderRules).trim(),
+        injectionContent: applyRegexRules(rawContent, injectionRules).trim()
+    };
+}
+
 export function renderTemplate(template, values) {
     return String(template ?? '').replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, key) => String(values?.[key] ?? ''));
 }

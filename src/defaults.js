@@ -93,6 +93,23 @@ export const DEFAULT_SETTINGS = {
                 replacement: '$1'
             }
         ],
+        injection: {
+            enabled: false,
+            position: 'in_chat',
+            depth: 4,
+            role: 'system',
+            template: '<branch_status>\n{{status}}\n</branch_status>',
+            outputRegex: [
+                {
+                    id: 'status-injection-tags',
+                    name: '正文注入提取 status 标签（默认关闭）',
+                    enabled: false,
+                    pattern: '^[\\s\\S]*?<status>([\\s\\S]*?)<\\/status>[\\s\\S]*$',
+                    flags: 'i',
+                    replacement: '$1'
+                }
+            ]
+        },
         promptEntries: [
             {
                 id: 'status-system',
