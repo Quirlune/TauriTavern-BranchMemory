@@ -172,6 +172,18 @@ export function processStatusOutput(rawOutput, renderRules = [], injectionRules 
     };
 }
 
+export function statusRecordOutputs(record, settings = {}) {
+    if (!record) return { rawContent: null, renderContent: '', injectionContent: '' };
+    if (record.rawContent === undefined || record.rawContent === null) {
+        return {
+            rawContent: null,
+            renderContent: String(record.content || '').trim(),
+            injectionContent: String(record.injectionContent || '').trim()
+        };
+    }
+    return processStatusOutput(record.rawContent, settings.outputRegex || [], settings.injection?.outputRegex || []);
+}
+
 function escapeXmlText(value) {
     return String(value ?? '')
         .replaceAll('&', '&amp;')

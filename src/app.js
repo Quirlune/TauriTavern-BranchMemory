@@ -162,8 +162,8 @@ export async function bootstrapExtension() {
             }, 800);
         },
         onRunNow: () => {
-            void enqueueImages({ generate: true, reason: 'manual' });
-            return enqueue({ generateMemory: true, generateStatus: true, reason: 'manual' });
+            return enqueue({ generateMemory: true, generateStatus: true, reason: 'manual' })
+                .then(() => enqueueImages({ generate: true, reason: 'manual' }));
         }
     });
 
@@ -250,7 +250,7 @@ export async function bootstrapExtension() {
             return;
         }
         schedule({ generateMemory: true, generateStatus: true, reason: 'assistant_output' }, 650);
-        setTimeout(() => void enqueueImages({ generate: true, reason: 'assistant_output' }), 850);
+        setTimeout(() => void queue.then(() => enqueueImages({ generate: true, reason: 'assistant_output' })), 850);
         generationResetTimer = setTimeout(() => {
             generationGate.reset();
         }, 1200);

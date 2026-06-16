@@ -9,6 +9,7 @@ import {
     renderTemplate,
     roleOf,
     segmentImageSource,
+    statusRecordOutputs,
     transcriptForFloorRange
 } from './core.js';
 import { characterPromptInfo, chatIdentity, readFullHistory, scopeHashForRef } from './history.js';
@@ -406,6 +407,10 @@ export class ImagePipeline {
         const scopeHash = scopeHashForRef(ref);
         const snapshot = await readFullHistory(handle);
         const character = characterPromptRecord(settings, characterPromptInfo(ref));
+        const runtime = await this.storage.getChatRuntime(handle) || {};
+        const statusOutputs = settings.status?.enabled === false
+            ? { rawContent: null, renderContent: '', injectionContent: '' }
+            : statusRecordOutputs(runtime.status, settings.status || {});
         const recipe = recipeHash({
             version: 2,
             api: settings.image.api,
@@ -413,6 +418,11 @@ export class ImagePipeline {
             inputRegex: settings.image.inputRegex,
             positionTag: settings.image.positionTag || 'position',
             promptTag: settings.image.promptTag || 'positive_prompt',
+            status: {
+                rawContent: statusOutputs.rawContent || '',
+                renderContent: statusOutputs.renderContent,
+                injectionContent: statusOutputs.injectionContent
+            },
             character: {
                 key: character.key,
                 prompt: character.prompt
@@ -467,6 +477,10 @@ export class ImagePipeline {
             character_key: character.key,
             character_id: character.characterId,
             character_file: character.fileName,
+            status: statusOutputs.renderContent,
+            previous_status: statusOutputs.renderContent,
+            status_raw: statusOutputs.rawContent || '',
+            status_injection: statusOutputs.injectionContent,
             position_tag: positionTag,
             prompt_tag: promptTag
         });

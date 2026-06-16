@@ -11,6 +11,7 @@ import {
     promptEntriesToMessages,
     selectActiveMemory,
     segmentImageSource,
+    statusRecordOutputs,
     statusInsertionIndex,
     transcriptForFloorRange
 } from '../src/core.js';
@@ -94,6 +95,23 @@ test('status render and chat injection regexes independently process the raw mod
     assert.equal(output.rawContent, '<status>HP=9</status><internal>hidden</internal>');
     assert.equal(output.renderContent, '<status>HP=9</status>');
     assert.equal(output.injectionContent, 'HP=9');
+});
+
+test('status record outputs resolve latest content for downstream macros', () => {
+    const outputs = statusRecordOutputs(
+        { rawContent: '<status>HP=9</status><internal>hidden</internal>' },
+        {
+            outputRegex: [{ enabled: true, pattern: '<internal>[\\s\\S]*?<\\/internal>', flags: 'g', replacement: '' }],
+            injection: { outputRegex: [{ enabled: true, pattern: '^[\\s\\S]*?<status>([\\s\\S]*?)<\\/status>[\\s\\S]*$', flags: '', replacement: '$1' }] }
+        }
+    );
+    assert.equal(outputs.renderContent, '<status>HP=9</status>');
+    assert.equal(outputs.injectionContent, 'HP=9');
+    assert.deepEqual(statusRecordOutputs({ content: 'legacy status', injectionContent: 'legacy inject' }, {}), {
+        rawContent: null,
+        renderContent: 'legacy status',
+        injectionContent: 'legacy inject'
+    });
 });
 
 test('request monitor redacts credentials without hiding generation parameters', () => {

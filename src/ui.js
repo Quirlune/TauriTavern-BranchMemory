@@ -656,7 +656,7 @@ export class SettingsUi {
         return `
             <section class="ttbm-section">
                 <div class="ttbm-section-head"><h3>${title}</h3><button class="menu_button" type="button" data-add-entry="${path}">新增条目</button></div>
-                <p class="ttbm-hint">按从上到下的顺序发送。常用宏：{{chat}}、{{body}}、{{body_segments}}、{{segmented_body}}、{{source_segments}}、{{assistant}}、{{floor}}、{{floor_start}}、{{floor_end}}、{{total_floors}}、{{eligible_floor}}、{{previous_large}}、{{small_summaries}}、{{memory}}、{{previous_status}}、{{last_user}}、{{last_assistant}}、{{max_images}}、{{position_tag}}、{{prompt_tag}}、{{character_prompt}}、{{appearance_prompt}}、{{character_name}}、{{character_key}}、{{character_id}}、{{character_file}}</p>
+                <p class="ttbm-hint">按从上到下的顺序发送。常用宏：{{chat}}、{{body}}、{{body_segments}}、{{segmented_body}}、{{source_segments}}、{{assistant}}、{{floor}}、{{floor_start}}、{{floor_end}}、{{total_floors}}、{{eligible_floor}}、{{previous_large}}、{{small_summaries}}、{{memory}}、{{status}}、{{previous_status}}、{{status_raw}}、{{status_injection}}、{{last_user}}、{{last_assistant}}、{{max_images}}、{{position_tag}}、{{prompt_tag}}、{{character_prompt}}、{{appearance_prompt}}、{{character_name}}、{{character_key}}、{{character_id}}、{{character_file}}</p>
                 <div class="ttbm-list">${promptEntriesHtml(entries, path)}</div>
             </section>
         `;

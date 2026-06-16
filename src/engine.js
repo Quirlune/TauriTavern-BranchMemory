@@ -8,6 +8,7 @@ import {
     recipeHash,
     renderTemplate,
     selectActiveMemory,
+    statusRecordOutputs,
     transcriptForFloorRange
 } from './core.js';
 import { chatIdentity, readFullHistory, scopeHashForRef } from './history.js';
@@ -166,14 +167,14 @@ export class BranchMemoryEngine {
                     recipe: statusRecipe,
                     key: statusKey,
                     memoryText,
-                    previousStatus: this.#statusOutputs(runtime.status, settings.status).renderContent,
+                    previousStatus: statusRecordOutputs(runtime.status, settings.status).renderContent,
                     identity
                 });
             }
         }
 
         const effectiveStatus = statusRecord || runtime.status || null;
-        const statusOutputs = this.#statusOutputs(effectiveStatus, settings.status);
+        const statusOutputs = statusRecordOutputs(effectiveStatus, settings.status);
         this.renderStatus(statusOutputs.renderContent, settings.status);
         this.#applyStatusInjection(settings, statusOutputs.injectionContent);
 
@@ -352,18 +353,6 @@ export class BranchMemoryEngine {
         }).trim();
         this.applyInjection('memory', text, settings.memory.injection);
         return text;
-    }
-
-    #statusOutputs(record, settings) {
-        if (!record) return { rawContent: null, renderContent: '', injectionContent: '' };
-        if (record.rawContent === undefined || record.rawContent === null) {
-            return {
-                rawContent: null,
-                renderContent: String(record.content || '').trim(),
-                injectionContent: ''
-            };
-        }
-        return processStatusOutput(record.rawContent, settings.outputRegex, settings.injection.outputRegex);
     }
 
     #applyStatusInjection(settings, statusContent) {
