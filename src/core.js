@@ -424,39 +424,122 @@ function stripJsComments(text) {
     return output;
 }
 
-function convertSingleQuotedStrings(text) {
+function readJsStringLiteral(text, startIndex) {
+    const quote = text[startIndex];
+    let value = '';
+    let escaped = false;
+    for (let index = startIndex + 1; index < text.length; index += 1) {
+        const char = text[index];
+        if (escaped) {
+            if (char === 'n') value += '\n';
+            else if (char === 'r') value += '\r';
+            else if (char === 't') value += '\t';
+            else if (char === 'b') value += '\b';
+            else if (char === 'f') value += '\f';
+            else value += char;
+            escaped = false;
+            continue;
+        }
+        if (char === '\\') {
+            escaped = true;
+            continue;
+        }
+        if (char === quote) {
+            return { value, endIndex: index };
+        }
+        value += char;
+    }
+    return { value, endIndex: text.length - 1 };
+}
+
+function normalizeJsStrings(text) {
     let output = '';
     for (let index = 0; index < text.length; index += 1) {
         const char = text[index];
-        if (char !== "'") {
+        if (char !== '"' && char !== "'" && char !== '`') {
             output += char;
             continue;
         }
-        let value = '';
-        let escaped = false;
-        index += 1;
-        for (; index < text.length; index += 1) {
-            const inner = text[index];
-            if (escaped) {
-                value += inner;
-                escaped = false;
-            } else if (inner === '\\') {
-                escaped = true;
-            } else if (inner === "'") {
-                break;
-            } else {
-                value += inner;
-            }
+        const literal = readJsStringLiteral(text, index);
+        output += JSON.stringify(literal.value);
+        index = literal.endIndex;
+    }
+    return output;
+}
+
+function copyJsonString(text, startIndex) {
+    let output = '"';
+    let escaped = false;
+    for (let index = startIndex + 1; index < text.length; index += 1) {
+        const char = text[index];
+        output += char;
+        if (escaped) {
+            escaped = false;
+        } else if (char === '\\') {
+            escaped = true;
+        } else if (char === '"') {
+            return { output, endIndex: index };
         }
-        output += JSON.stringify(value);
+    }
+    return { output, endIndex: text.length - 1 };
+}
+
+function quoteUnquotedObjectKeys(text) {
+    let output = '';
+    for (let index = 0; index < text.length; index += 1) {
+        const char = text[index];
+        if (char === '"') {
+            const copied = copyJsonString(text, index);
+            output += copied.output;
+            index = copied.endIndex;
+            continue;
+        }
+
+        if (char === '{' || char === ',') {
+            output += char;
+            index += 1;
+            while (index < text.length && /\s/.test(text[index])) {
+                output += text[index];
+                index += 1;
+            }
+
+            const match = text.slice(index).match(/^([A-Za-z_$][\w$]*)\s*:/);
+            if (match) {
+                output += JSON.stringify(match[1]);
+                index += match[1].length - 1;
+            } else {
+                index -= 1;
+            }
+            continue;
+        }
+
+        output += char;
+    }
+    return output;
+}
+
+function removeTrailingCommas(text) {
+    let output = '';
+    for (let index = 0; index < text.length; index += 1) {
+        const char = text[index];
+        if (char === '"') {
+            const copied = copyJsonString(text, index);
+            output += copied.output;
+            index = copied.endIndex;
+            continue;
+        }
+        if (char === ',') {
+            let nextIndex = index + 1;
+            while (nextIndex < text.length && /\s/.test(text[nextIndex])) nextIndex += 1;
+            if (text[nextIndex] === '}' || text[nextIndex] === ']') continue;
+        }
+        output += char;
     }
     return output;
 }
 
 function parseJsObjectLiteral(literal) {
-    const jsonLike = convertSingleQuotedStrings(stripJsComments(literal))
-        .replace(/([{,]\s*)([A-Za-z_$][\w$]*)(\s*:)/g, '$1"$2"$3')
-        .replace(/,\s*([}\]])/g, '$1');
+    const jsonLike = removeTrailingCommas(quoteUnquotedObjectKeys(normalizeJsStrings(stripJsComments(literal))));
     return JSON.parse(jsonLike);
 }
 

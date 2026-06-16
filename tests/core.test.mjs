@@ -170,8 +170,8 @@ test('bizyair api example parses into a reusable template', () => {
                 "3:KSampler.steps": 26,
                 "5:EmptyLatentImage.width": 1280,
                 "5:EmptyLatentImage.height": 1560,
-                "6:CLIPTextEncode.text": "masterpiece, very aesthetic, best quality",
-                "7:CLIPTextEncode.text": "(worst quality:1.4), bad anatomy, watermark"
+                "6:CLIPTextEncode.text": "masterpiece, very aesthetic, best quality, 8k, (Anime-art:1), amazing quality, very awa, sharp eyes, absurdres, newest, high detail, 3d, realstic, artist:mikaze_oto, [artist:kedama milk],[artist:ask_(askzy)],artist:wanke,artist:wlop,",
+                "7:CLIPTextEncode.text": "(worst quality:1.4), muscular woman, deformed, distorted, disfigured, bad anatomy, missing legs, extra legs, extra limbs, cloned face, low resolution, low quality, jpeg artifacts, (watermark, signature, text:1.5), error, ugly, bad proportions, bad face, unrealistic, mutated, cross-eye, (fused eyes:1.3), blurred eyes, poorly drawn face,obese, Chubby, curvy, over weight, overweight, sweat,"
               }
             })
         });
@@ -184,7 +184,9 @@ test('bizyair api example parses into a reusable template', () => {
     assert.equal(parsed.controls.height, 1560);
     assert.equal(parsed.controls.randomSeed, false);
     assert.match(parsed.controls.positivePromptPrefix, /masterpiece/);
+    assert.match(parsed.controls.positivePromptPrefix, /artist:wanke/);
     assert.match(parsed.controls.negativePrompt, /worst quality/);
+    assert.match(parsed.controls.negativePrompt, /text:1\.5/);
     assert.match(parsed.inputValuesTemplate, /"3:KSampler.seed": {{seed}}/);
     assert.match(parsed.inputValuesTemplate, /"5:EmptyLatentImage.width": {{width}}/);
     assert.match(parsed.inputValuesTemplate, /"6:CLIPTextEncode.text": "{{positive_prompt}}"/);
