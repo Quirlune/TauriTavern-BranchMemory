@@ -195,7 +195,9 @@ BizyAir API 参考了 [bizyair-tavern-plugin](https://github.com/dhdbv-cbs/bizya
 - `POST https://api.bizyair.cn/w/v1/webapp/task/openapi/create`
 - `GET https://api.bizyair.cn/w/v1/webapp/task/openapi/query?task_id=...`
 
-默认 Web App ID 为 `48570`，并预置了 zimage 模板常用的 `input_values` 字段。`input_values JSON 模板` 支持这些宏：
+默认 Web App ID 为 `48570`，并预置了 zimage 模板常用的 `input_values` 字段。这里的 `input_values JSON 模板` 不是日常要手填的独立模块；它是 BizyAir Web App 的节点输入映射，决定 seed、尺寸、正面提示词、负面提示词等值应该写进哪些 `xx:Node.field`。解析 API 示例代码或切换已保存模板时，插件会自动生成并维护它；只有换工作流或自动识别不符合预期时，才需要展开高级项手改。
+
+`input_values JSON 模板` 支持这些宏：
 
 ```text
 {{prompt}}
@@ -240,6 +242,8 @@ const response = await fetch('https://api.bizyair.cn/w/v1/webapp/task/openapi/cr
   })
 });
 ```
+
+解析器支持 `body: JSON.stringify({ ... })`、`const payload = { ... }; body: JSON.stringify(payload)`、`const raw = JSON.stringify(payload); const requestOptions = { body: raw }` 这类网站原生 / Postman 风格写法，也可以直接粘贴只包含请求 body 的对象片段。它只静态读取对象字面量和变量引用，不会执行粘贴进去的 JavaScript。
 
 点击“解析并保存为模板”后，插件会读取 `web_app_id`、`suppress_preview_output` 和 `input_values`，生成一个可切换模板。能对应到插件控件的字段会被抽出并同步：
 

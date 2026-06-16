@@ -332,27 +332,104 @@ function parseJsObjectLiteral(literal) {
     return JSON.parse(jsonLike);
 }
 
-function extractJsonStringifyObject(source) {
-    const text = String(source || '');
-    const callIndex = text.indexOf('JSON.stringify');
-    if (callIndex >= 0) {
-        const openParen = text.indexOf('(', callIndex);
-        if (openParen >= 0) {
-            const objectStart = text.indexOf('{', openParen);
-            if (objectStart >= 0) {
-                const block = readBalancedBlock(text, objectStart);
-                if (block) return block;
-            }
+function skipWhitespace(text, index) {
+    while (index < text.length && /\s/.test(text[index])) index += 1;
+    return index;
+}
+
+function readJsonStringifyArgument(text, callIndex) {
+    const openParen = text.indexOf('(', callIndex + 'JSON.stringify'.length);
+    if (openParen < 0) return '';
+    const call = readBalancedBlock(text, openParen, '(', ')');
+    return call ? call.slice(1, -1).trim() : '';
+}
+
+function expressionObjectBlock(expression, assignments) {
+    const text = String(expression || '').trimStart();
+    if (!text) return '';
+    if (text[0] === '{') return readBalancedBlock(text, 0);
+
+    if (text.startsWith('JSON.stringify')) {
+        const argument = readJsonStringifyArgument(text, 0);
+        return expressionObjectBlock(argument, assignments);
+    }
+
+    const match = text.match(/^([A-Za-z_$][\w$]*)\b/);
+    return match ? assignments.get(match[1]) || '' : '';
+}
+
+function collectObjectAssignments(text) {
+    const assignments = new Map();
+    const declarations = [];
+    const declarationPattern = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*/g;
+    let match;
+    while ((match = declarationPattern.exec(text))) {
+        declarations.push({ name: match[1], valueIndex: declarationPattern.lastIndex });
+    }
+
+    for (const declaration of declarations) {
+        const start = skipWhitespace(text, declaration.valueIndex);
+        if (text[start] === '{') {
+            const block = readBalancedBlock(text, start);
+            if (block) assignments.set(declaration.name, block);
         }
+    }
+
+    let changed = true;
+    while (changed) {
+        changed = false;
+        for (const declaration of declarations) {
+            if (assignments.has(declaration.name)) continue;
+            const block = expressionObjectBlock(text.slice(declaration.valueIndex), assignments);
+            if (!block) continue;
+            assignments.set(declaration.name, block);
+            changed = true;
+        }
+    }
+
+    return assignments;
+}
+
+function pushCandidate(candidates, seen, block) {
+    if (!block || seen.has(block)) return;
+    seen.add(block);
+    candidates.push(block);
+}
+
+function blockHasInputValues(block) {
+    try {
+        const body = parseJsObjectLiteral(block);
+        return isPlainObject(body?.input_values ?? body?.inputValues);
+    } catch {
+        return false;
+    }
+}
+
+function extractJsonStringifyObject(source) {
+    const text = stripJsComments(String(source || ''));
+    const assignments = collectObjectAssignments(text);
+    const candidates = [];
+    const seen = new Set();
+
+    const stringifyPattern = /\bJSON\.stringify\s*\(/g;
+    let match;
+    while ((match = stringifyPattern.exec(text))) {
+        const argument = readJsonStringifyArgument(text, match.index);
+        pushCandidate(candidates, seen, expressionObjectBlock(argument, assignments));
+    }
+
+    for (const block of assignments.values()) {
+        pushCandidate(candidates, seen, block);
     }
 
     for (let index = 0; index < text.length; index += 1) {
         if (text[index] !== '{') continue;
         const block = readBalancedBlock(text, index);
-        if (!block || !block.includes('input_values')) continue;
-        return block;
+        if (!block || (!block.includes('input_values') && !block.includes('inputValues'))) continue;
+        pushCandidate(candidates, seen, block);
     }
-    return '';
+
+    return candidates.find(blockHasInputValues) || candidates[0] || '';
 }
 
 function numericControl(controls, name, value) {
@@ -439,7 +516,7 @@ export function parseBizyAirApiExample(source) {
         throw new Error(`API 示例代码里的请求 body 解析失败：${error.message}`);
     }
 
-    const inputValues = body?.input_values;
+    const inputValues = body?.input_values ?? body?.inputValues;
     if (!isPlainObject(inputValues)) {
         throw new Error('API 示例代码里没有找到 input_values 对象。');
     }

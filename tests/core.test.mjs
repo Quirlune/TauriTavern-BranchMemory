@@ -182,3 +182,61 @@ test('bizyair api example parses into a reusable template', () => {
     assert.match(parsed.inputValuesTemplate, /"7:CLIPTextEncode.text": "{{negative_prompt}}"/);
     assert.doesNotMatch(parsed.inputValuesTemplate, /{{cfg}}/);
 });
+
+test('bizyair api example resolves native js body variables', () => {
+    const parsed = parseBizyAirApiExample(`
+        const payload = {
+            web_app_id: 52001,
+            suppress_preview_output: false,
+            inputValues: {
+                "3:KSampler.seed": 123456,
+                "3:KSampler.cfg": 7,
+                "5:EmptyLatentImage.width": 832,
+                "5:EmptyLatentImage.height": 1216,
+                "6:CLIPTextEncode.text": "cinematic light, detailed eyes",
+                "7:CLIPTextEncode.text": "worst quality, watermark"
+            }
+        };
+
+        const response = await fetch("https://api.bizyair.cn/w/v1/webapp/task/openapi/create", {
+            method: "POST",
+            headers: myHeaders,
+            body: JSON.stringify(payload)
+        });
+    `);
+
+    assert.equal(parsed.webAppId, 52001);
+    assert.equal(parsed.suppressPreviewOutput, false);
+    assert.equal(parsed.controls.cfg, 7);
+    assert.match(parsed.inputValuesTemplate, /"3:KSampler.cfg": {{cfg}}/);
+    assert.match(parsed.inputValuesTemplate, /"6:CLIPTextEncode.text": "{{positive_prompt}}"/);
+});
+
+test('bizyair api example resolves raw requestOptions body variables', () => {
+    const parsed = parseBizyAirApiExample(`
+        const payload = {
+            "web_app_id": 51978,
+            "input_values": {
+                "3:KSampler.seed": 95663262248077,
+                "3:KSampler.steps": 26,
+                "5:EmptyLatentImage.width": 1280,
+                "5:EmptyLatentImage.height": 1560,
+                "6:CLIPTextEncode.text": "masterpiece, best quality",
+                "7:CLIPTextEncode.text": "bad anatomy, watermark"
+            }
+        };
+        const raw = JSON.stringify(payload);
+        const requestOptions = {
+            method: "POST",
+            headers: myHeaders,
+            body: raw,
+            redirect: "follow"
+        };
+        fetch("https://api.bizyair.cn/w/v1/webapp/task/openapi/create", requestOptions);
+    `);
+
+    assert.equal(parsed.webAppId, 51978);
+    assert.equal(parsed.controls.steps, 26);
+    assert.equal(parsed.controls.width, 1280);
+    assert.match(parsed.controls.negativePrompt, /bad anatomy/);
+});

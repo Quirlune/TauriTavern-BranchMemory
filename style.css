@@ -151,6 +151,15 @@ body.ttbm-modal-open {
     background: rgba(0, 0, 0, .12);
 }
 
+.ttbm-bizyair-advanced summary {
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.ttbm-bizyair-advanced[open] summary {
+    margin-bottom: 8px;
+}
+
 .ttbm-card-head {
     align-items: end;
     margin-bottom: 8px;

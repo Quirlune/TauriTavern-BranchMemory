@@ -493,8 +493,12 @@ export class SettingsUi {
                 <label>BizyAir API Key（可用逗号或换行填多个，当前版本使用第一个）<textarea class="text_pole ttbm-code" rows="3" data-setting="image.bizyair.apiKeys">${escapeHtml(image.bizyair.apiKeys)}</textarea></label>
                 <label>正面提示词永久前缀<textarea class="text_pole ttbm-code" rows="5" data-setting="image.bizyair.positivePromptPrefix">${escapeHtml(image.bizyair.positivePromptPrefix || '')}</textarea></label>
                 <label>负面提示词<textarea class="text_pole ttbm-code" rows="4" data-setting="image.bizyair.negativePrompt">${escapeHtml(image.bizyair.negativePrompt)}</textarea></label>
-                <label>input_values JSON 模板<textarea class="text_pole ttbm-code" rows="16" data-setting="image.bizyair.inputValuesTemplate">${escapeHtml(image.bizyair.inputValuesTemplate)}</textarea></label>
-                <p class="ttbm-hint">模板会 POST 到 BizyAir <code>/webapp/task/openapi/create</code> 的 <code>input_values</code>。可用宏：{{prompt}}、{{positive_prompt}}、{{ai_prompt}}、{{positive_prompt_prefix}}、{{negative_prompt}}、{{seed}}、{{width}}、{{height}}、{{steps}}、{{cfg}}、{{sampler}}、{{scheduler}}、{{denoise}}。字符串宏会自动做 JSON 字符串内容转义，所以请保留模板里的双引号。</p>
+                <details class="ttbm-card ttbm-bizyair-advanced">
+                    <summary>高级：input_values JSON 模板（通常不用手改）</summary>
+                    <p class="ttbm-hint">这不是单独的功能模块，而是 BizyAir 工作流的字段映射：插件最终会把这里渲染出的对象作为 <code>input_values</code> POST 给 <code>/webapp/task/openapi/create</code>。解析示例代码或切换已保存模板时会自动维护它。</p>
+                    <label>模板内容<textarea class="text_pole ttbm-code" rows="14" data-setting="image.bizyair.inputValuesTemplate">${escapeHtml(image.bizyair.inputValuesTemplate)}</textarea></label>
+                    <p class="ttbm-hint">可用宏：{{prompt}}、{{positive_prompt}}、{{ai_prompt}}、{{positive_prompt_prefix}}、{{negative_prompt}}、{{seed}}、{{width}}、{{height}}、{{steps}}、{{cfg}}、{{sampler}}、{{scheduler}}、{{denoise}}。字符串宏会自动做 JSON 字符串内容转义，所以请保留模板里的双引号。</p>
+                </details>
             </section>
         `;
     }
