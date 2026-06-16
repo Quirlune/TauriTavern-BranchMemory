@@ -107,16 +107,32 @@ async function blobToDataUrl(blob) {
     });
 }
 
-async function cacheImageUrl(url, enabled) {
+async function cacheImageUrl(url, enabled, signal) {
     if (!enabled || String(url).startsWith('data:')) return String(url);
     try {
-        const response = await fetch(url, { mode: 'cors' });
+        const response = await fetch(url, { mode: 'cors', signal });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return await blobToDataUrl(await response.blob());
     } catch (error) {
+        if (signal?.aborted) throw signal.reason || error;
         console.warn('[BranchMemory] BizyAir image cache fallback to remote URL', error);
         return String(url);
     }
+}
+
+async function mapConcurrent(items, concurrency, mapper, signal) {
+    const output = new Array(items.length);
+    let nextIndex = 0;
+    const workerCount = Math.min(items.length, Math.max(1, Math.floor(Number(concurrency) || 1)));
+    const workers = Array.from({ length: workerCount }, async () => {
+        while (!signal?.aborted && nextIndex < items.length) {
+            const index = nextIndex;
+            nextIndex += 1;
+            output[index] = await mapper(items[index], index);
+        }
+    });
+    await Promise.all(workers);
+    return output.filter(Boolean);
 }
 
 function textNodeWalker(root) {
@@ -493,29 +509,37 @@ export class ImagePipeline {
             .filter(item => item.segmentIndex >= 1 && item.segmentIndex <= segmentedSource.segments.length);
         if (!plan.length) return;
 
-        const items = [];
         this.abortController = new AbortController();
+        const controller = this.abortController;
+        const signal = controller.signal;
+        let items = [];
         try {
-            for (const item of plan) {
+            const concurrency = Math.min(plan.length, Math.max(1, Math.floor(Number(settings.image.bizyair.concurrency) || 3)));
+            items = await mapConcurrent(plan, concurrency, async (item) => {
                 const segment = segmentedSource.segments[item.segmentIndex - 1];
-                if (!segment) continue;
+                if (!segment) return null;
                 const slotId = hashString(`${key}:${item.id}:${item.segmentIndex}:${item.prompt}`);
-                const remoteUrl = await this.client.generate(item.prompt, this.abortController.signal);
-                const imageUrl = await cacheImageUrl(remoteUrl, settings.image.cacheAsDataUrl !== false);
-                items.push({
-                    ...item,
-                    id: slotId,
-                    segmentText: segment.text,
-                    segmentOccurrence: segment.occurrence,
-                    contentWrapped: segmentedSource.contentWrapped,
-                    isLastSegment: item.segmentIndex === segmentedSource.segments.length,
-                    remoteUrl,
-                    imageUrl,
-                    createdAt: new Date().toISOString()
-                });
-            }
+                try {
+                    const remoteUrl = await this.client.generate(item.prompt, signal);
+                    const imageUrl = await cacheImageUrl(remoteUrl, settings.image.cacheAsDataUrl !== false, signal);
+                    return {
+                        ...item,
+                        id: slotId,
+                        segmentText: segment.text,
+                        segmentOccurrence: segment.occurrence,
+                        contentWrapped: segmentedSource.contentWrapped,
+                        isLastSegment: item.segmentIndex === segmentedSource.segments.length,
+                        remoteUrl,
+                        imageUrl,
+                        createdAt: new Date().toISOString()
+                    };
+                } catch (error) {
+                    controller.abort(error);
+                    throw error;
+                }
+            }, signal);
         } finally {
-            this.abortController = null;
+            if (this.abortController === controller) this.abortController = null;
         }
         if (!items.length) return;
 

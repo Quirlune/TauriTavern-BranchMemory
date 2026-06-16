@@ -492,6 +492,7 @@ export class SettingsUi {
                     <label class="ttbm-check"><input type="checkbox" data-setting="image.bizyair.suppressPreviewOutput" ${image.bizyair.suppressPreviewOutput !== false ? 'checked' : ''}>suppress preview output</label>
                     ${numberField('轮询间隔 ms', 'image.bizyair.pollIntervalMs', image.bizyair.pollIntervalMs, 500, 30000)}
                     ${numberField('最大轮询次数', 'image.bizyair.maxPolls', image.bizyair.maxPolls, 1, 300)}
+                    ${numberField('BizyAir 并发数', 'image.bizyair.concurrency', image.bizyair.concurrency || 3, 1, 8)}
                     <label>CFG<input class="text_pole" type="number" step="0.1" data-setting="image.bizyair.cfg" value="${escapeHtml(image.bizyair.cfg)}"></label>
                     <label>Denoise<input class="text_pole" type="number" step="0.01" data-setting="image.bizyair.denoise" value="${escapeHtml(image.bizyair.denoise)}"></label>
                     <label>Sampler<input class="text_pole" data-setting="image.bizyair.sampler" value="${escapeHtml(image.bizyair.sampler)}"></label>

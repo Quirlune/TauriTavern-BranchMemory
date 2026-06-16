@@ -186,6 +186,7 @@ export const DEFAULT_SETTINGS = {
             negativePrompt: 'low quality, blurry, bad anatomy, extra fingers, watermark, text',
             pollIntervalMs: 2000,
             maxPolls: 60,
+            concurrency: 3,
             inputValuesTemplate: DEFAULT_BIZYAIR_INPUT_VALUES_TEMPLATE,
             templateLibrary: {
                 activeId: 'default-zimage',

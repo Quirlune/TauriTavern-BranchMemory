@@ -45,6 +45,7 @@ function normalizeSettings(settings) {
     settings.image.bizyair.seed = clampInteger(settings.image.bizyair.seed, 1, Number.MAX_SAFE_INTEGER, 101);
     settings.image.bizyair.pollIntervalMs = clampInteger(settings.image.bizyair.pollIntervalMs, 500, 30000, 2000);
     settings.image.bizyair.maxPolls = clampInteger(settings.image.bizyair.maxPolls, 1, 300, 60);
+    settings.image.bizyair.concurrency = clampInteger(settings.image.bizyair.concurrency, 1, 8, 3);
     settings.image.bizyair.templateLibrary.items ||= [];
     if (!settings.image.bizyair.templateLibrary.items.length) {
         settings.image.bizyair.templateLibrary.activeId = '';
