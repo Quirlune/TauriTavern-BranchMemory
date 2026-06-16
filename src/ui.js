@@ -1,4 +1,4 @@
-import { escapeHtml, statusInsertionIndex, uniqueId } from './core.js';
+import { escapeHtml, parseBizyAirApiExample, statusInsertionIndex, uniqueId } from './core.js';
 
 function readPath(target, path) {
     return path.split('.').reduce((value, key) => value?.[key], target);
@@ -186,6 +186,16 @@ export class SettingsUi {
                 });
             }
 
+            const templateAction = event.target.closest('[data-bizyair-template-action]')?.dataset.bizyairTemplateAction;
+            if (templateAction === 'parse-save') {
+                this.#parseBizyAirTemplate();
+                return;
+            }
+            if (templateAction === 'delete') {
+                this.#deleteBizyAirTemplate();
+                return;
+            }
+
             const addEntry = event.target.closest('[data-add-entry]');
             if (addEntry) {
                 const list = readPath(this.settings, addEntry.dataset.addEntry);
@@ -236,6 +246,12 @@ export class SettingsUi {
             let value = target.type === 'checkbox' ? target.checked : target.value;
             if (target.type === 'number') value = Number(value);
             writePath(this.settings, path, value);
+            if (event.type === 'change' && path === 'image.bizyair.templateLibrary.activeId') {
+                this.#applySelectedBizyAirTemplate();
+                this.renderModal();
+                this.#changed(true);
+                return;
+            }
             this.#changed(event.type === 'change');
             if (event.type === 'change' && path.endsWith('.api.mode')) {
                 this.renderModal();
@@ -424,6 +440,9 @@ export class SettingsUi {
 
     #imageHtml() {
         const image = this.settings.image;
+        const library = this.#bizyairTemplateLibrary();
+        const currentTemplate = this.#selectedBizyAirTemplate();
+        const templateOptions = library.items.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === library.activeId ? 'selected' : ''}>${escapeHtml(item.name || item.id)}</option>`).join('');
         return `
             <section class="ttbm-section">
                 <div class="ttbm-grid">
@@ -444,11 +463,24 @@ export class SettingsUi {
             <section class="ttbm-section">
                 <h3>BizyAir API</h3>
                 <div class="ttbm-grid">
+                    <label>已保存模板<select class="text_pole" data-setting="image.bizyair.templateLibrary.activeId">
+                        ${templateOptions || '<option value="">暂无模板</option>'}
+                    </select></label>
+                    <label>新模板名称<input class="text_pole" data-setting="image.bizyair.templateLibrary.importName" value="${escapeHtml(library.importName || '')}" placeholder="例如：竖图工作流 / 51978"></label>
+                    <label class="ttbm-check"><button class="menu_button" type="button" data-bizyair-template-action="delete">删除当前模板</button></label>
+                </div>
+                <p class="ttbm-hint">切换模板会立刻应用该模板保存的 Web App ID、input_values 和示例中能对应到插件控件的参数。当前模板可调字段：${escapeHtml(this.#templateControlsText(currentTemplate))}</p>
+                <label>粘贴 BizyAir API 示例代码<textarea class="text_pole ttbm-code" rows="10" data-setting="image.bizyair.templateLibrary.exampleCode" placeholder="粘贴 fetch('https://api.bizyair.cn/.../create', { body: JSON.stringify(...) }) 示例">${escapeHtml(library.exampleCode || '')}</textarea></label>
+                <div class="ttbm-card-actions">
+                    <button class="menu_button" type="button" data-bizyair-template-action="parse-save">解析并保存为模板</button>
+                </div>
+                <p class="ttbm-hint">解析器会读取 <code>web_app_id</code>、<code>suppress_preview_output</code> 和 <code>input_values</code>。seed、steps、width、height、cfg、sampler、scheduler、denoise、正面/负面提示词这些能对应控件的字段会同步到设置；其它字段保留为模板固定值。</p>
+                <div class="ttbm-grid">
                     ${numberField('Web App ID', 'image.bizyair.webAppId', image.bizyair.webAppId, 1, 1000000)}
                     ${numberField('宽度', 'image.bizyair.width', image.bizyair.width, 64, 4096)}
                     ${numberField('高度', 'image.bizyair.height', image.bizyair.height, 64, 4096)}
                     ${numberField('Steps', 'image.bizyair.steps', image.bizyair.steps, 1, 200)}
-                    ${numberField('Seed', 'image.bizyair.seed', image.bizyair.seed, 1, 2147483647)}
+                    ${numberField('Seed', 'image.bizyair.seed', image.bizyair.seed, 1, Number.MAX_SAFE_INTEGER)}
                     <label class="ttbm-check"><input type="checkbox" data-setting="image.bizyair.randomSeed" ${image.bizyair.randomSeed ? 'checked' : ''}>随机 seed</label>
                     <label class="ttbm-check"><input type="checkbox" data-setting="image.bizyair.suppressPreviewOutput" ${image.bizyair.suppressPreviewOutput !== false ? 'checked' : ''}>suppress preview output</label>
                     ${numberField('轮询间隔 ms', 'image.bizyair.pollIntervalMs', image.bizyair.pollIntervalMs, 500, 30000)}
@@ -459,11 +491,104 @@ export class SettingsUi {
                     <label>Scheduler<input class="text_pole" data-setting="image.bizyair.scheduler" value="${escapeHtml(image.bizyair.scheduler)}"></label>
                 </div>
                 <label>BizyAir API Key（可用逗号或换行填多个，当前版本使用第一个）<textarea class="text_pole ttbm-code" rows="3" data-setting="image.bizyair.apiKeys">${escapeHtml(image.bizyair.apiKeys)}</textarea></label>
+                <label>正面提示词永久前缀<textarea class="text_pole ttbm-code" rows="5" data-setting="image.bizyair.positivePromptPrefix">${escapeHtml(image.bizyair.positivePromptPrefix || '')}</textarea></label>
                 <label>负面提示词<textarea class="text_pole ttbm-code" rows="4" data-setting="image.bizyair.negativePrompt">${escapeHtml(image.bizyair.negativePrompt)}</textarea></label>
                 <label>input_values JSON 模板<textarea class="text_pole ttbm-code" rows="16" data-setting="image.bizyair.inputValuesTemplate">${escapeHtml(image.bizyair.inputValuesTemplate)}</textarea></label>
-                <p class="ttbm-hint">模板会 POST 到 BizyAir <code>/webapp/task/openapi/create</code> 的 <code>input_values</code>。可用宏：{{prompt}}、{{positive_prompt}}、{{negative_prompt}}、{{seed}}、{{width}}、{{height}}、{{steps}}、{{cfg}}、{{sampler}}、{{scheduler}}、{{denoise}}。字符串宏会自动做 JSON 字符串内容转义，所以请保留模板里的双引号。</p>
+                <p class="ttbm-hint">模板会 POST 到 BizyAir <code>/webapp/task/openapi/create</code> 的 <code>input_values</code>。可用宏：{{prompt}}、{{positive_prompt}}、{{ai_prompt}}、{{positive_prompt_prefix}}、{{negative_prompt}}、{{seed}}、{{width}}、{{height}}、{{steps}}、{{cfg}}、{{sampler}}、{{scheduler}}、{{denoise}}。字符串宏会自动做 JSON 字符串内容转义，所以请保留模板里的双引号。</p>
             </section>
         `;
+    }
+
+    #bizyairTemplateLibrary() {
+        const bizyair = this.settings.image.bizyair;
+        bizyair.templateLibrary ||= {};
+        bizyair.templateLibrary.items ||= [];
+        bizyair.templateLibrary.importName ||= '';
+        bizyair.templateLibrary.exampleCode ||= '';
+        if (!bizyair.templateLibrary.activeId && bizyair.templateLibrary.items.length) {
+            bizyair.templateLibrary.activeId = bizyair.templateLibrary.items[0].id;
+        }
+        return bizyair.templateLibrary;
+    }
+
+    #selectedBizyAirTemplate() {
+        const library = this.#bizyairTemplateLibrary();
+        return library.items.find(item => item.id === library.activeId) || library.items[0] || null;
+    }
+
+    #applyBizyAirTemplate(template) {
+        if (!template) return;
+        const bizyair = this.settings.image.bizyair;
+        if (template.webAppId !== null && template.webAppId !== undefined && Number.isFinite(Number(template.webAppId))) {
+            bizyair.webAppId = Number(template.webAppId);
+        }
+        if (typeof template.suppressPreviewOutput === 'boolean') bizyair.suppressPreviewOutput = template.suppressPreviewOutput;
+        if (template.inputValuesTemplate) bizyair.inputValuesTemplate = template.inputValuesTemplate;
+
+        const controls = template.controls || {};
+        for (const key of ['width', 'height', 'steps', 'seed', 'cfg', 'denoise']) {
+            if (Object.prototype.hasOwnProperty.call(controls, key)) bizyair[key] = Number(controls[key]);
+        }
+        for (const key of ['sampler', 'scheduler', 'positivePromptPrefix', 'negativePrompt']) {
+            if (Object.prototype.hasOwnProperty.call(controls, key)) bizyair[key] = String(controls[key] ?? '');
+        }
+        if (Object.prototype.hasOwnProperty.call(controls, 'randomSeed')) {
+            bizyair.randomSeed = Boolean(controls.randomSeed);
+        }
+    }
+
+    #applySelectedBizyAirTemplate() {
+        this.#applyBizyAirTemplate(this.#selectedBizyAirTemplate());
+    }
+
+    #templateControlsText(template) {
+        const keys = Object.keys(template?.controls || {});
+        return keys.length ? keys.join('、') : '无，仅保留固定 input_values 字段';
+    }
+
+    #parseBizyAirTemplate() {
+        try {
+            const library = this.#bizyairTemplateLibrary();
+            const parsed = parseBizyAirApiExample(library.exampleCode);
+            const id = uniqueId('bizyair-template');
+            const name = String(library.importName || '').trim()
+                || `BizyAir ${parsed.webAppId || '模板'} ${library.items.length + 1}`;
+            const template = {
+                id,
+                name,
+                webAppId: parsed.webAppId,
+                suppressPreviewOutput: parsed.suppressPreviewOutput,
+                inputValuesTemplate: parsed.inputValuesTemplate,
+                controls: parsed.controls,
+                fixedKeys: parsed.fixedKeys,
+                createdAt: new Date().toISOString()
+            };
+            library.items.push(template);
+            library.activeId = id;
+            library.importName = '';
+            this.#applyBizyAirTemplate(template);
+            this.renderModal();
+            this.#changed(true);
+            globalThis.toastr?.success?.(`已保存 BizyAir 模板：${name}`);
+        } catch (error) {
+            this.showError(error);
+        }
+    }
+
+    #deleteBizyAirTemplate() {
+        const library = this.#bizyairTemplateLibrary();
+        if (!library.items.length) return;
+        const index = library.items.findIndex(item => item.id === library.activeId);
+        if (index < 0) return;
+        if (library.items.length <= 1) {
+            this.showError(new Error('至少保留一个 BizyAir 模板。'));
+            return;
+        }
+        library.items.splice(index, 1);
+        library.activeId = library.items[Math.max(0, index - 1)]?.id || library.items[0]?.id || '';
+        this.#applySelectedBizyAirTemplate();
+        this.renderModal();
+        this.#changed(true);
     }
 
     #currentCharacterInfo() {

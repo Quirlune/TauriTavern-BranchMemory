@@ -7,6 +7,8 @@ export const STATUS_TABLE = 'status-v1';
 export const IMAGE_TABLE = 'image-v1';
 export const CHAT_RUNTIME_KEY = 'runtime-v1';
 
+const DEFAULT_BIZYAIR_INPUT_VALUES_TEMPLATE = '{\n  "3:KSampler.seed": {{seed}},\n  "3:KSampler.steps": {{steps}},\n  "3:KSampler.cfg": {{cfg}},\n  "3:KSampler.sampler_name": "{{sampler}}",\n  "3:KSampler.scheduler": "{{scheduler}}",\n  "3:KSampler.denoise": {{denoise}},\n  "6:CLIPTextEncode.text": "{{positive_prompt}}",\n  "7:CLIPTextEncode.text": "{{negative_prompt}}",\n  "13:EmptySD3LatentImage.width": {{width}},\n  "13:EmptySD3LatentImage.height": {{height}},\n  "13:EmptySD3LatentImage.batch_size": 1\n}';
+
 export const DEFAULT_SETTINGS = {
     version: 1,
     enabled: true,
@@ -164,7 +166,7 @@ export const DEFAULT_SETTINGS = {
                 title: '图片规划 · 系统约束',
                 enabled: true,
                 role: 'system',
-                content: '你是插图导演。你只负责从正文中选择 2 到 3 个适合插图的位置，并为每个位置写出 BizyAir 生图提示词。不要续写剧情。必须输出 JSON，不要输出解释。'
+                content: '你是插图导演。你只负责从正文中选择 2 到 3 个适合插图的位置，并为每个位置写出 BizyAir 生图提示词。不要续写剧情。必须输出 JSON，不要输出解释。只写主体、动作、场景、构图、光影和角色外貌；固定质量词前缀与负面提示词由插件负责，不需要你重复。'
             },
             {
                 id: 'image-plan-user',
@@ -187,10 +189,38 @@ export const DEFAULT_SETTINGS = {
             sampler: 'euler',
             scheduler: 'simple',
             denoise: 1,
+            positivePromptPrefix: '',
             negativePrompt: 'low quality, blurry, bad anatomy, extra fingers, watermark, text',
             pollIntervalMs: 2000,
             maxPolls: 60,
-            inputValuesTemplate: '{\n  "3:KSampler.seed": {{seed}},\n  "3:KSampler.steps": {{steps}},\n  "3:KSampler.cfg": {{cfg}},\n  "3:KSampler.sampler_name": "{{sampler}}",\n  "3:KSampler.scheduler": "{{scheduler}}",\n  "3:KSampler.denoise": {{denoise}},\n  "6:CLIPTextEncode.text": "{{positive_prompt}}",\n  "7:CLIPTextEncode.text": "{{negative_prompt}}",\n  "13:EmptySD3LatentImage.width": {{width}},\n  "13:EmptySD3LatentImage.height": {{height}},\n  "13:EmptySD3LatentImage.batch_size": 1\n}'
+            inputValuesTemplate: DEFAULT_BIZYAIR_INPUT_VALUES_TEMPLATE,
+            templateLibrary: {
+                activeId: 'default-zimage',
+                importName: '',
+                exampleCode: '',
+                items: [
+                    {
+                        id: 'default-zimage',
+                        name: '默认 zimage',
+                        webAppId: 48570,
+                        suppressPreviewOutput: true,
+                        inputValuesTemplate: DEFAULT_BIZYAIR_INPUT_VALUES_TEMPLATE,
+                        controls: {
+                            width: 1024,
+                            height: 1024,
+                            steps: 10,
+                            seed: 101,
+                            randomSeed: true,
+                            cfg: 1,
+                            sampler: 'euler',
+                            scheduler: 'simple',
+                            denoise: 1,
+                            positivePromptPrefix: '',
+                            negativePrompt: 'low quality, blurry, bad anatomy, extra fingers, watermark, text'
+                        }
+                    }
+                ]
+            }
         }
     }
 };

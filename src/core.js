@@ -227,6 +227,240 @@ export function parseImagePlan(rawOutput, { maxItems = 3 } = {}) {
         .slice(0, Math.max(1, Math.min(6, Math.floor(Number(maxItems) || 3))));
 }
 
+function readBalancedBlock(text, startIndex, openChar = '{', closeChar = '}') {
+    let depth = 0;
+    let quote = '';
+    let escaped = false;
+    for (let index = startIndex; index < text.length; index += 1) {
+        const char = text[index];
+        if (quote) {
+            if (escaped) {
+                escaped = false;
+            } else if (char === '\\') {
+                escaped = true;
+            } else if (char === quote) {
+                quote = '';
+            }
+            continue;
+        }
+
+        if (char === '"' || char === "'" || char === '`') {
+            quote = char;
+            continue;
+        }
+        if (char === openChar) depth += 1;
+        if (char === closeChar) {
+            depth -= 1;
+            if (depth === 0) return text.slice(startIndex, index + 1);
+        }
+    }
+    return '';
+}
+
+function stripJsComments(text) {
+    let output = '';
+    let quote = '';
+    let escaped = false;
+    for (let index = 0; index < text.length; index += 1) {
+        const char = text[index];
+        const next = text[index + 1];
+        if (quote) {
+            output += char;
+            if (escaped) {
+                escaped = false;
+            } else if (char === '\\') {
+                escaped = true;
+            } else if (char === quote) {
+                quote = '';
+            }
+            continue;
+        }
+        if (char === '"' || char === "'" || char === '`') {
+            quote = char;
+            output += char;
+            continue;
+        }
+        if (char === '/' && next === '/') {
+            while (index < text.length && text[index] !== '\n') index += 1;
+            output += '\n';
+            continue;
+        }
+        if (char === '/' && next === '*') {
+            index += 2;
+            while (index < text.length && !(text[index] === '*' && text[index + 1] === '/')) index += 1;
+            index += 1;
+            continue;
+        }
+        output += char;
+    }
+    return output;
+}
+
+function convertSingleQuotedStrings(text) {
+    let output = '';
+    for (let index = 0; index < text.length; index += 1) {
+        const char = text[index];
+        if (char !== "'") {
+            output += char;
+            continue;
+        }
+        let value = '';
+        let escaped = false;
+        index += 1;
+        for (; index < text.length; index += 1) {
+            const inner = text[index];
+            if (escaped) {
+                value += inner;
+                escaped = false;
+            } else if (inner === '\\') {
+                escaped = true;
+            } else if (inner === "'") {
+                break;
+            } else {
+                value += inner;
+            }
+        }
+        output += JSON.stringify(value);
+    }
+    return output;
+}
+
+function parseJsObjectLiteral(literal) {
+    const jsonLike = convertSingleQuotedStrings(stripJsComments(literal))
+        .replace(/([{,]\s*)([A-Za-z_$][\w$]*)(\s*:)/g, '$1"$2"$3')
+        .replace(/,\s*([}\]])/g, '$1');
+    return JSON.parse(jsonLike);
+}
+
+function extractJsonStringifyObject(source) {
+    const text = String(source || '');
+    const callIndex = text.indexOf('JSON.stringify');
+    if (callIndex >= 0) {
+        const openParen = text.indexOf('(', callIndex);
+        if (openParen >= 0) {
+            const objectStart = text.indexOf('{', openParen);
+            if (objectStart >= 0) {
+                const block = readBalancedBlock(text, objectStart);
+                if (block) return block;
+            }
+        }
+    }
+
+    for (let index = 0; index < text.length; index += 1) {
+        if (text[index] !== '{') continue;
+        const block = readBalancedBlock(text, index);
+        if (!block || !block.includes('input_values')) continue;
+        return block;
+    }
+    return '';
+}
+
+function numericControl(controls, name, value) {
+    const number = Number(value);
+    if (Number.isFinite(number)) controls[name] = number;
+}
+
+function looksNegativePrompt(value) {
+    const text = String(value || '').toLowerCase();
+    return /worst quality|bad anatomy|watermark|signature|deformed|distorted|disfigured|low quality|negative|ugly/.test(text);
+}
+
+function inputValueMacro(key, value, controls) {
+    const lower = String(key).toLowerCase();
+    if (lower.endsWith('.seed') || lower.includes(':seed') || lower.includes('.seed')) {
+        numericControl(controls, 'seed', value);
+        controls.randomSeed = false;
+        return { macro: 'seed', quote: false };
+    }
+    if (lower.endsWith('.steps') || lower.includes('.steps')) {
+        numericControl(controls, 'steps', value);
+        return { macro: 'steps', quote: false };
+    }
+    if (lower.endsWith('.cfg') || lower.includes('.cfg')) {
+        numericControl(controls, 'cfg', value);
+        return { macro: 'cfg', quote: false };
+    }
+    if (lower.endsWith('.denoise') || lower.includes('.denoise')) {
+        numericControl(controls, 'denoise', value);
+        return { macro: 'denoise', quote: false };
+    }
+    if (lower.endsWith('.width') || lower.includes('.width')) {
+        numericControl(controls, 'width', value);
+        return { macro: 'width', quote: false };
+    }
+    if (lower.endsWith('.height') || lower.includes('.height')) {
+        numericControl(controls, 'height', value);
+        return { macro: 'height', quote: false };
+    }
+    if (lower.endsWith('.sampler_name') || lower.includes('.sampler_name')) {
+        if (value !== undefined && value !== null) controls.sampler = String(value);
+        return { macro: 'sampler', quote: true };
+    }
+    if (lower.endsWith('.scheduler') || lower.includes('.scheduler')) {
+        if (value !== undefined && value !== null) controls.scheduler = String(value);
+        return { macro: 'scheduler', quote: true };
+    }
+    if (lower.endsWith('.text') || lower.includes('.text')) {
+        if (looksNegativePrompt(value)) {
+            controls.negativePrompt = String(value ?? '');
+            return { macro: 'negative_prompt', quote: true };
+        }
+        controls.positivePromptPrefix = String(value ?? '');
+        return { macro: 'positive_prompt', quote: true };
+    }
+    return null;
+}
+
+function renderInputValuesTemplate(inputValues, controls) {
+    const lines = ['{'];
+    const entries = Object.entries(inputValues);
+    entries.forEach(([key, value], index) => {
+        const mapped = inputValueMacro(key, value, controls);
+        const renderedValue = mapped
+            ? mapped.quote
+                ? `"{{${mapped.macro}}}"`
+                : `{{${mapped.macro}}}`
+            : JSON.stringify(value);
+        const comma = index === entries.length - 1 ? '' : ',';
+        lines.push(`  ${JSON.stringify(key)}: ${renderedValue}${comma}`);
+    });
+    lines.push('}');
+    return lines.join('\n');
+}
+
+export function parseBizyAirApiExample(source) {
+    const block = extractJsonStringifyObject(source);
+    if (!block) throw new Error('没有找到 JSON.stringify(...) 中的 BizyAir 请求 body。');
+
+    let body;
+    try {
+        body = parseJsObjectLiteral(block);
+    } catch (error) {
+        throw new Error(`API 示例代码里的请求 body 解析失败：${error.message}`);
+    }
+
+    const inputValues = body?.input_values;
+    if (!isPlainObject(inputValues)) {
+        throw new Error('API 示例代码里没有找到 input_values 对象。');
+    }
+
+    const controls = {};
+    const webAppId = Number(body.web_app_id ?? body.webAppId);
+    const suppressPreviewOutput = typeof body.suppress_preview_output === 'boolean'
+        ? body.suppress_preview_output
+        : typeof body.suppressPreviewOutput === 'boolean'
+            ? body.suppressPreviewOutput
+            : true;
+
+    return {
+        webAppId: Number.isFinite(webAppId) ? webAppId : null,
+        suppressPreviewOutput,
+        inputValuesTemplate: renderInputValuesTemplate(inputValues, controls),
+        controls,
+        fixedKeys: Object.keys(inputValues).filter(key => !inputValueMacro(key, inputValues[key], {}))
+    };
+}
+
 export function renderTemplate(template, values) {
     return String(template ?? '').replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, key) => String(values?.[key] ?? ''));
 }

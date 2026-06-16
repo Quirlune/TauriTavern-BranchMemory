@@ -56,7 +56,15 @@ function jsonStringContent(value) {
 }
 
 function randomSeed() {
-    return Math.floor(Math.random() * 2147483647) + 1;
+    return Math.floor(Math.random() * Number.MAX_SAFE_INTEGER) + 1;
+}
+
+function joinPositivePrompt(prefix, prompt) {
+    const fixed = String(prefix || '').trim();
+    const dynamic = String(prompt || '').trim();
+    if (!fixed) return dynamic;
+    if (!dynamic) return fixed;
+    return `${fixed}${/[，,;；]$/.test(fixed) ? ' ' : ', '}${dynamic}`;
 }
 
 function getFinalImage(outputs) {
@@ -201,9 +209,12 @@ export class BizyAirClient {
         if (!apiKey) throw new Error('图片模块尚未填写 BizyAir API Key。');
 
         const seed = image.bizyair.randomSeed ? randomSeed() : asNumber(image.bizyair.seed, 101);
+        const positivePrompt = joinPositivePrompt(image.bizyair.positivePromptPrefix, prompt);
         const values = {
-            prompt: jsonStringContent(prompt),
-            positive_prompt: jsonStringContent(prompt),
+            prompt: jsonStringContent(positivePrompt),
+            positive_prompt: jsonStringContent(positivePrompt),
+            ai_prompt: jsonStringContent(prompt),
+            positive_prompt_prefix: jsonStringContent(image.bizyair.positivePromptPrefix || ''),
             negative_prompt: jsonStringContent(image.bizyair.negativePrompt || ''),
             seed,
             width: asNumber(image.bizyair.width, 1024),
@@ -313,7 +324,9 @@ export class ImagePipeline {
             },
             bizyair: {
                 webAppId: settings.image.bizyair.webAppId,
+                suppressPreviewOutput: settings.image.bizyair.suppressPreviewOutput,
                 inputValuesTemplate: settings.image.bizyair.inputValuesTemplate,
+                positivePromptPrefix: settings.image.bizyair.positivePromptPrefix,
                 negativePrompt: settings.image.bizyair.negativePrompt
             }
         });

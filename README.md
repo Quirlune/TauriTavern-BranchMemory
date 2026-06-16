@@ -12,6 +12,8 @@
 - 图片模块可在 AI 回复完成后独立规划插图位置，调用 BizyAir 生成图片并插回正文对应位置。
 - 图片缓存按聊天、楼层、分支链和提示词配方绑定，历史楼层重新加载后也会回渲染已有图片。
 - 图片模块可为不同角色保存独立外貌提示词，切换角色后自动加载对应档案。
+- 图片模块可粘贴 BizyAir API 示例代码，自动解析为可切换的 `input_values` 模板。
+- 图片模块支持正面提示词永久前缀，自动拼接到 AI 输出的正面提示词前。
 - 全局调用监控可观察正文及其它插件的生成事件、最终提示词、采样参数和底层网络请求。
 - 记忆、状态栏和图片模块分别拥有输入正则、输出正则和可排序提示词条目栈。
 - 状态栏支持自定义 HTML 模板与 CSS。
@@ -198,6 +200,8 @@ BizyAir API 参考了 [bizyair-tavern-plugin](https://github.com/dhdbv-cbs/bizya
 ```text
 {{prompt}}
 {{positive_prompt}}
+{{ai_prompt}}
+{{positive_prompt_prefix}}
 {{negative_prompt}}
 {{seed}}
 {{width}}
@@ -210,6 +214,51 @@ BizyAir API 参考了 [bizyair-tavern-plugin](https://github.com/dhdbv-cbs/bizya
 ```
 
 字符串宏会自动做 JSON 字符串内容转义，所以模板里应保留双引号，例如 `"6:CLIPTextEncode.text": "{{positive_prompt}}"`。
+
+### API 示例解析与模板切换
+
+在 BizyAir API 区域可以粘贴类似官方示例的 JavaScript 代码：
+
+```js
+const response = await fetch('https://api.bizyair.cn/w/v1/webapp/task/openapi/create', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer YOUR_API_KEY'
+  },
+  body: JSON.stringify({
+    "web_app_id": 51978,
+    "suppress_preview_output": true,
+    "input_values": {
+      "3:KSampler.seed": 95663262248077,
+      "3:KSampler.steps": 26,
+      "5:EmptyLatentImage.width": 1280,
+      "5:EmptyLatentImage.height": 1560,
+      "6:CLIPTextEncode.text": "masterpiece, very aesthetic, best quality",
+      "7:CLIPTextEncode.text": "(worst quality:1.4), bad anatomy"
+    }
+  })
+});
+```
+
+点击“解析并保存为模板”后，插件会读取 `web_app_id`、`suppress_preview_output` 和 `input_values`，生成一个可切换模板。能对应到插件控件的字段会被抽出并同步：
+
+```text
+seed / steps / width / height / cfg / sampler / scheduler / denoise
+正面提示词前缀 / 负面提示词
+```
+
+如果某个工作流没有 `cfg`、`sampler`、`denoise` 这类字段，就不会生成对应宏，也不会强行套用这些参数。没有对应插件控件的 `input_values` 字段会作为固定值保留在模板中，避免破坏工作流必需输入。切换“已保存模板”会立即应用该模板的 Web App ID、模板文本和已识别参数。
+
+### 正面提示词前缀
+
+“正面提示词永久前缀”会在调用 BizyAir 前拼接到 AI 输出的 `prompt` 前面：
+
+```text
+最终 positive_prompt = 正面提示词永久前缀 + AI 规划输出的 prompt
+```
+
+因此图片规划模型不需要负责固定质量词，也不需要负责负面提示词。负面提示词始终来自“负面提示词”输入框，并通过 `{{negative_prompt}}` 注入模板。
 
 图片缓存存储在全局 Extension Store 的 `image-v1` 表中，缓存键包含当前聊天 scope、用户楼层号、该楼层的累计消息链指纹和图片配方 hash。因此在第 100 楼进入第 70 楼分支时，分叉点以前楼层的图片仍然能复用；分叉后链指纹变化的楼层会按新分支重新生成。修改图片提示词、角色外貌提示词、正则、规划模型或 BizyAir 模板会形成新配方，旧配方图片仍保留在缓存表中，但不会作为当前配方结果回渲染。开启“把图片缓存为 data URL”时，插件会尽量把 BizyAir 返回的图片下载为 data URL；如果跨域或网络阻止下载，会保留远程 URL 作为回退。
 

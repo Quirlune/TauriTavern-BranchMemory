@@ -5,6 +5,7 @@ import {
     applyRegexRules,
     boundaries,
     buildSnapshot,
+    parseBizyAirApiExample,
     parseImagePlan,
     processStatusOutput,
     promptEntriesToMessages,
@@ -142,4 +143,42 @@ test('character prompt info follows the active character ref', () => {
         characterId: 'alice-001',
         fileName: 'Alice.png'
     });
+});
+
+test('bizyair api example parses into a reusable template', () => {
+    const parsed = parseBizyAirApiExample(`
+        const response = await fetch('https://api.bizyair.cn/w/v1/webapp/task/openapi/create', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer YOUR_API_KEY'
+          },
+          body: JSON.stringify({
+              "web_app_id": 51978,
+              "suppress_preview_output": true,
+              "input_values": {
+                "3:KSampler.seed": 95663262248077,
+                "3:KSampler.steps": 26,
+                "5:EmptyLatentImage.width": 1280,
+                "5:EmptyLatentImage.height": 1560,
+                "6:CLIPTextEncode.text": "masterpiece, very aesthetic, best quality",
+                "7:CLIPTextEncode.text": "(worst quality:1.4), bad anatomy, watermark"
+              }
+            })
+        });
+    `);
+    assert.equal(parsed.webAppId, 51978);
+    assert.equal(parsed.suppressPreviewOutput, true);
+    assert.equal(parsed.controls.seed, 95663262248077);
+    assert.equal(parsed.controls.steps, 26);
+    assert.equal(parsed.controls.width, 1280);
+    assert.equal(parsed.controls.height, 1560);
+    assert.equal(parsed.controls.randomSeed, false);
+    assert.match(parsed.controls.positivePromptPrefix, /masterpiece/);
+    assert.match(parsed.controls.negativePrompt, /worst quality/);
+    assert.match(parsed.inputValuesTemplate, /"3:KSampler.seed": {{seed}}/);
+    assert.match(parsed.inputValuesTemplate, /"5:EmptyLatentImage.width": {{width}}/);
+    assert.match(parsed.inputValuesTemplate, /"6:CLIPTextEncode.text": "{{positive_prompt}}"/);
+    assert.match(parsed.inputValuesTemplate, /"7:CLIPTextEncode.text": "{{negative_prompt}}"/);
+    assert.doesNotMatch(parsed.inputValuesTemplate, /{{cfg}}/);
 });

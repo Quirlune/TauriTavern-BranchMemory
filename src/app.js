@@ -42,9 +42,15 @@ function normalizeSettings(settings) {
     settings.image.bizyair.width = clampInteger(settings.image.bizyair.width, 64, 4096, 1024);
     settings.image.bizyair.height = clampInteger(settings.image.bizyair.height, 64, 4096, 1024);
     settings.image.bizyair.steps = clampInteger(settings.image.bizyair.steps, 1, 200, 10);
-    settings.image.bizyair.seed = clampInteger(settings.image.bizyair.seed, 1, 2147483647, 101);
+    settings.image.bizyair.seed = clampInteger(settings.image.bizyair.seed, 1, Number.MAX_SAFE_INTEGER, 101);
     settings.image.bizyair.pollIntervalMs = clampInteger(settings.image.bizyair.pollIntervalMs, 500, 30000, 2000);
     settings.image.bizyair.maxPolls = clampInteger(settings.image.bizyair.maxPolls, 1, 300, 60);
+    settings.image.bizyair.templateLibrary.items ||= [];
+    if (!settings.image.bizyair.templateLibrary.items.length) {
+        settings.image.bizyair.templateLibrary.activeId = '';
+    } else if (!settings.image.bizyair.templateLibrary.items.some(item => item.id === settings.image.bizyair.templateLibrary.activeId)) {
+        settings.image.bizyair.templateLibrary.activeId = settings.image.bizyair.templateLibrary.items[0].id;
+    }
     return settings;
 }
 
