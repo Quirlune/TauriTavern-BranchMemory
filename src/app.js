@@ -263,8 +263,11 @@ export async function bootstrapExtension() {
     });
     eventSource.on(event_types.MESSAGE_SWIPED, () => {
         ui.ensureStatusPosition();
-        schedule({ generateMemory: true, generateStatus: false, reason: 'message_swiped' }, 500);
-        void enqueueImages({ generate: false, reason: 'message_swiped' });
+        imagePipeline?.cancel();
+        generationGate.reset();
+        clearTimeout(generationResetTimer);
+        schedule({ generateMemory: true, generateStatus: true, reason: 'message_swiped' }, 500);
+        setTimeout(() => void queue.then(() => enqueueImages({ generate: true, reason: 'message_swiped' })), 700);
     });
     eventSource.on(event_types.MESSAGE_EDITED, () => {
         ui.ensureStatusPosition();

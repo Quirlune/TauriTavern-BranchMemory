@@ -497,13 +497,17 @@ export class ImagePipeline {
     enqueue(options = {}) {
         this.queue = this.queue
             .then(() => this.refresh(options))
-            .catch(error => this.onError(error));
+            .catch((error) => {
+                if (!error?.branchMemoryCancelled) this.onError(error);
+            });
         return this.queue;
     }
 
     cancel() {
         notifyImageDebug(this.getSettings(), '收到取消图片生成请求，正在中断并发任务', 'warning');
-        this.abortController?.abort(new Error('图片生成已取消。'));
+        const error = new Error('图片生成已取消。');
+        error.branchMemoryCancelled = true;
+        this.abortController?.abort(error);
         this.abortController = null;
     }
 
@@ -586,6 +590,7 @@ export class ImagePipeline {
             notifyImageDebug(settings, '正文提取后为空，跳过图片规划', 'warning');
             return;
         }
+        const sourceHash = hashString(source);
         const segmentedSource = segmentImageSource(source);
         if (!segmentedSource.segments.length) {
             notifyImageDebug(settings, '正文分片为空，跳过图片规划', 'warning');
@@ -627,6 +632,14 @@ export class ImagePipeline {
         notifyImageDebug(settings, `调用图片规划模型：messages=${prompt.length}`);
         const rawPlan = await this.generate({ prompt, responseLength: settings.image.responseLength, apiConfig: settings.image.api });
         if (chatIdentity(this.storage.currentRef()) !== identity) return;
+        const plannedSnapshot = await readFullHistory(handle);
+        const plannedFloorInfo = getFloor(plannedSnapshot, row.floor);
+        const plannedRow = plannedSnapshot.rows[row.index];
+        const plannedSource = applyRegexRules(String(plannedRow?.message?.mes || ''), settings.image.inputRegex).trim();
+        if (!plannedFloorInfo || plannedFloorInfo.chain !== floorInfo.chain || hashString(plannedSource) !== sourceHash) {
+            notifyImageDebug(settings, '图片规划返回时消息已变化，丢弃旧规划结果', 'warning');
+            return;
+        }
         notifyImageDebug(settings, `图片规划模型返回：${String(rawPlan || '').length} 字符`);
         const planText = String(rawPlan || '').trim();
         const plan = parseImagePlan(planText, { maxItems: settings.image.maxImagesPerMessage, positionTag, promptTag })
@@ -681,6 +694,18 @@ export class ImagePipeline {
             notifyImageDebug(settings, 'BizyAir 没有返回可保存图片，跳过写入缓存', 'warning');
             return;
         }
+        if (chatIdentity(this.storage.currentRef()) !== identity) {
+            notifyImageDebug(settings, '聊天已切换，丢弃本批图片结果', 'warning');
+            return;
+        }
+        const currentSnapshot = await readFullHistory(handle);
+        const currentFloorInfo = getFloor(currentSnapshot, row.floor);
+        const currentRow = currentSnapshot.rows[row.index];
+        const currentSource = applyRegexRules(String(currentRow?.message?.mes || ''), settings.image.inputRegex).trim();
+        if (!currentFloorInfo || currentFloorInfo.chain !== floorInfo.chain || hashString(currentSource) !== sourceHash) {
+            notifyImageDebug(settings, '当前消息已变化，丢弃旧图片任务结果', 'warning');
+            return;
+        }
 
         const record = {
             version: 1,
@@ -691,7 +716,7 @@ export class ImagePipeline {
             floor: row.floor,
             messageIndex: row.index,
             anchorChain: floorInfo.chain,
-            sourceHash: hashString(source),
+            sourceHash,
             items,
             createdAt: new Date().toISOString(),
             reason
