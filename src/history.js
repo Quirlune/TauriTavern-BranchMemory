@@ -38,3 +38,36 @@ export function chatIdentity(ref) {
     }
     return `group:${ref.chatId}`;
 }
+
+export function characterPromptInfo(ref) {
+    if (ref?.kind === 'character') {
+        const id = String(ref.characterId || ref.fileName || ref.name || 'unknown');
+        const fileName = String(ref.fileName || '');
+        return {
+            kind: 'character',
+            key: `character:${id}`,
+            label: String(ref.name || ref.characterName || fileName || ref.characterId || '当前角色'),
+            characterId: String(ref.characterId || ''),
+            fileName
+        };
+    }
+
+    if (ref?.kind === 'group') {
+        const id = String(ref.chatId || ref.groupId || 'current');
+        return {
+            kind: 'group',
+            key: `group:${id}`,
+            label: String(ref.name || ref.groupName || '当前群聊'),
+            characterId: '',
+            fileName: ''
+        };
+    }
+
+    return {
+        kind: 'unknown',
+        key: 'unknown',
+        label: '当前聊天',
+        characterId: '',
+        fileName: ''
+    };
+}

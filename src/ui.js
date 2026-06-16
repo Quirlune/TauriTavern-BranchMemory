@@ -75,11 +75,12 @@ function monitorRecordHtml(record) {
 }
 
 export class SettingsUi {
-    constructor({ settings, monitor, getConnectionProfiles = () => [], onSettingsChanged, onRunNow }) {
+    constructor({ settings, monitor, getConnectionProfiles = () => [], getCurrentCharacterInfo = () => null, onSettingsChanged, onRunNow }) {
         this.settings = settings;
         this.monitor = monitor;
         this.monitorState = monitor?.snapshot() || { active: false, records: [], maxEvents: 300 };
         this.getConnectionProfiles = getConnectionProfiles;
+        this.getCurrentCharacterInfo = getCurrentCharacterInfo;
         this.onSettingsChanged = onSettingsChanged;
         this.onRunNow = onRunNow;
         this.stats = null;
@@ -242,6 +243,24 @@ export class SettingsUi {
             return;
         }
 
+        if (target.classList.contains('ttbm-character-prompt')) {
+            const info = this.#currentCharacterInfo();
+            const prompts = this.#characterPromptSettings();
+            const previous = prompts.records[info.key] || {};
+            prompts.records[info.key] = {
+                ...previous,
+                key: info.key,
+                label: info.label,
+                kind: info.kind,
+                characterId: info.characterId,
+                fileName: info.fileName,
+                prompt: target.value,
+                updatedAt: new Date().toISOString()
+            };
+            this.#changed(event.type === 'change');
+            return;
+        }
+
         const card = target.closest('[data-list-path][data-index]');
         if (!card) return;
         const list = readPath(this.settings, card.dataset.listPath);
@@ -394,7 +413,7 @@ export class SettingsUi {
                     </dl>
                 ` : '<p>尚未读取当前聊天。</p>'}
                 ${stats?.lastError ? `<div class="ttbm-error">${escapeHtml(stats.lastError)}</div>` : ''}
-                <button id="ttbm-runtime-run" class="menu_button" type="button">立即执行记忆与状态栏</button>
+                <button id="ttbm-runtime-run" class="menu_button" type="button">立即执行记忆、状态栏与图片</button>
             </section>
             <section class="ttbm-section">
                 <h3>分支复用说明</h3>
@@ -418,6 +437,7 @@ export class SettingsUi {
                 <p class="ttbm-hint">图片模块独立于记忆和状态栏。它只在 AI 回复完成后生成；已有缓存会按楼层链指纹回填到历史消息对应位置，不会因为当前不在最后一层就失效。</p>
             </section>
             ${this.#apiSection('图片规划模型连接', 'image.api', image.api)}
+            ${this.#characterPromptHtml()}
             ${this.#regexSection('正文提取正则', 'image.inputRegex', image.inputRegex, '先从 AI 回复中提取/清洗需要规划插图的正文，再交给图片规划模型。')}
             ${this.#promptSection('图片规划提示词条目栈', 'image.promptEntries', image.promptEntries)}
             ${this.#regexSection('图片规划输出正则', 'image.outputRegex', image.outputRegex, '模型返回后先处理，再解析 JSON。')}
@@ -442,6 +462,40 @@ export class SettingsUi {
                 <label>负面提示词<textarea class="text_pole ttbm-code" rows="4" data-setting="image.bizyair.negativePrompt">${escapeHtml(image.bizyair.negativePrompt)}</textarea></label>
                 <label>input_values JSON 模板<textarea class="text_pole ttbm-code" rows="16" data-setting="image.bizyair.inputValuesTemplate">${escapeHtml(image.bizyair.inputValuesTemplate)}</textarea></label>
                 <p class="ttbm-hint">模板会 POST 到 BizyAir <code>/webapp/task/openapi/create</code> 的 <code>input_values</code>。可用宏：{{prompt}}、{{positive_prompt}}、{{negative_prompt}}、{{seed}}、{{width}}、{{height}}、{{steps}}、{{cfg}}、{{sampler}}、{{scheduler}}、{{denoise}}。字符串宏会自动做 JSON 字符串内容转义，所以请保留模板里的双引号。</p>
+            </section>
+        `;
+    }
+
+    #currentCharacterInfo() {
+        const info = this.getCurrentCharacterInfo?.() || {};
+        return {
+            kind: String(info.kind || 'unknown'),
+            key: String(info.key || 'unknown'),
+            label: String(info.label || '当前聊天'),
+            characterId: String(info.characterId || ''),
+            fileName: String(info.fileName || '')
+        };
+    }
+
+    #characterPromptSettings() {
+        this.settings.image.characterPrompts ||= {};
+        this.settings.image.characterPrompts.records ||= {};
+        this.settings.image.characterPrompts.fallback ||= '';
+        return this.settings.image.characterPrompts;
+    }
+
+    #characterPromptHtml() {
+        const info = this.#currentCharacterInfo();
+        const prompts = this.#characterPromptSettings();
+        const record = prompts.records[info.key] || {};
+        const savedCount = Object.keys(prompts.records).length;
+        return `
+            <section class="ttbm-section">
+                <h3>角色外貌提示词</h3>
+                <p class="ttbm-hint">当前角色：<strong>${escapeHtml(info.label)}</strong> <code>${escapeHtml(info.key)}</code>。这里保存的是当前角色的外貌/画风写法实例；切换角色后会自动加载对应角色的文本。</p>
+                <label>当前角色外貌提示词<textarea class="text_pole ttbm-code ttbm-character-prompt" rows="8">${escapeHtml(record.prompt || '')}</textarea></label>
+                <label>默认外貌提示词（当前角色未填写时使用）<textarea class="text_pole ttbm-code" rows="5" data-setting="image.characterPrompts.fallback">${escapeHtml(prompts.fallback || '')}</textarea></label>
+                <p class="ttbm-hint">图片规划提示词可用宏：{{character_prompt}}、{{appearance_prompt}}、{{character_name}}、{{character_key}}、{{character_id}}、{{character_file}}。已保存 ${savedCount} 个角色档案。</p>
             </section>
         `;
     }
@@ -472,7 +526,7 @@ export class SettingsUi {
         return `
             <section class="ttbm-section">
                 <div class="ttbm-section-head"><h3>${title}</h3><button class="menu_button" type="button" data-add-entry="${path}">新增条目</button></div>
-                <p class="ttbm-hint">按从上到下的顺序发送。常用宏：{{chat}}、{{body}}、{{assistant}}、{{floor}}、{{floor_start}}、{{floor_end}}、{{total_floors}}、{{eligible_floor}}、{{previous_large}}、{{small_summaries}}、{{memory}}、{{previous_status}}、{{last_user}}、{{last_assistant}}、{{max_images}}</p>
+                <p class="ttbm-hint">按从上到下的顺序发送。常用宏：{{chat}}、{{body}}、{{assistant}}、{{floor}}、{{floor_start}}、{{floor_end}}、{{total_floors}}、{{eligible_floor}}、{{previous_large}}、{{small_summaries}}、{{memory}}、{{previous_status}}、{{last_user}}、{{last_assistant}}、{{max_images}}、{{character_prompt}}、{{appearance_prompt}}、{{character_name}}、{{character_key}}、{{character_id}}、{{character_file}}</p>
                 <div class="ttbm-list">${promptEntriesHtml(entries, path)}</div>
             </section>
         `;
@@ -499,7 +553,7 @@ export class SettingsUi {
                     </select></label>
                     <label class="ttbm-check"><input type="checkbox" data-setting="${path}.includePreset" ${config.includePreset !== false ? 'checked' : ''}>应用该连接配置的采样预设</label>
                 </div>
-                <p class="ttbm-hint">独立模式复用 Connection Manager 中保存的 Chat Completion 配置和密钥。记忆与状态栏可以选择不同配置，插件不会保存 API Key。</p>
+                <p class="ttbm-hint">独立模式复用 Connection Manager 中保存的 Chat Completion 配置和密钥。记忆、状态栏和图片规划可以选择不同配置，插件不会保存这些模型 API Key。</p>
                 ${profiles.length ? '' : '<p class="ttbm-warning">当前没有可用的 Chat Completion Connection Profile，请先在 Connection Manager 中创建。</p>'}
             </section>
         `;

@@ -10,7 +10,7 @@ import {
     roleOf,
     transcriptForFloorRange
 } from './core.js';
-import { chatIdentity, readFullHistory, scopeHashForRef } from './history.js';
+import { characterPromptInfo, chatIdentity, readFullHistory, scopeHashForRef } from './history.js';
 
 function latestAssistantRow(snapshot) {
     for (let index = snapshot.rows.length - 1; index >= 0; index -= 1) {
@@ -27,6 +27,16 @@ function lastMessage(snapshot, role) {
         }
     }
     return '';
+}
+
+function characterPromptRecord(settings, info) {
+    const prompts = settings.image?.characterPrompts || {};
+    const record = prompts.records?.[info.key] || null;
+    const prompt = String(record?.prompt || prompts.fallback || '').trim();
+    return {
+        ...info,
+        prompt
+    };
 }
 
 function normalizeList(value) {
@@ -290,12 +300,17 @@ export class ImagePipeline {
         const identity = chatIdentity(ref);
         const scopeHash = scopeHashForRef(ref);
         const snapshot = await readFullHistory(handle);
+        const character = characterPromptRecord(settings, characterPromptInfo(ref));
         const recipe = recipeHash({
             version: 1,
             api: settings.image.api,
             promptEntries: settings.image.promptEntries,
             inputRegex: settings.image.inputRegex,
             outputRegex: settings.image.outputRegex,
+            character: {
+                key: character.key,
+                prompt: character.prompt
+            },
             bizyair: {
                 webAppId: settings.image.bizyair.webAppId,
                 inputValuesTemplate: settings.image.bizyair.inputValuesTemplate,
@@ -330,7 +345,13 @@ export class ImagePipeline {
             total_floors: snapshot.totalFloors,
             last_user: lastMessage(snapshot, 'user'),
             last_assistant: lastMessage(snapshot, 'assistant'),
-            max_images: settings.image.maxImagesPerMessage
+            max_images: settings.image.maxImagesPerMessage,
+            character_prompt: character.prompt,
+            appearance_prompt: character.prompt,
+            character_name: character.label,
+            character_key: character.key,
+            character_id: character.characterId,
+            character_file: character.fileName
         });
         if (!prompt.length) throw new Error('图片规划没有启用的提示词条目。');
 

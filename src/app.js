@@ -10,6 +10,7 @@ import { ConnectionManagerRequestService } from '/scripts/extensions/shared.js';
 import { AssistantGenerationGate, clampInteger, deepMerge } from './core.js';
 import { DEFAULT_SETTINGS } from './defaults.js';
 import { BranchMemoryEngine } from './engine.js';
+import { characterPromptInfo } from './history.js';
 import { ImagePipeline } from './images.js';
 import { RequestMonitor } from './monitor.js';
 import { StorageGateway, waitForTauriHost } from './storage.js';
@@ -137,6 +138,7 @@ export async function bootstrapExtension() {
         settings,
         monitor,
         getConnectionProfiles,
+        getCurrentCharacterInfo: () => characterPromptInfo(storage.currentRef()),
         onSettingsChanged: (_settings, { apply = false } = {}) => {
             normalizeSettings(settings);
             pendingSettingsApply ||= apply;

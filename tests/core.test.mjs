@@ -12,6 +12,7 @@ import {
     statusInsertionIndex,
     transcriptForFloorRange
 } from '../src/core.js';
+import { characterPromptInfo } from '../src/history.js';
 import { sanitizeMonitorValue } from '../src/monitor.js';
 
 const messages = [
@@ -125,4 +126,20 @@ test('image planning output parses anchored insertion slots', () => {
 
 test('image planning output reports invalid json clearly', () => {
     assert.throws(() => parseImagePlan('not json'), /图片规划输出不是有效 JSON/);
+});
+
+test('character prompt info follows the active character ref', () => {
+    const info = characterPromptInfo({
+        kind: 'character',
+        characterId: 'alice-001',
+        fileName: 'Alice.png',
+        name: 'Alice'
+    });
+    assert.deepEqual(info, {
+        kind: 'character',
+        key: 'character:alice-001',
+        label: 'Alice',
+        characterId: 'alice-001',
+        fileName: 'Alice.png'
+    });
 });

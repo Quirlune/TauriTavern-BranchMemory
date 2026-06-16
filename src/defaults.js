@@ -143,6 +143,10 @@ export const DEFAULT_SETTINGS = {
         responseLength: 900,
         maxImagesPerMessage: 3,
         cacheAsDataUrl: true,
+        characterPrompts: {
+            fallback: '',
+            records: {}
+        },
         inputRegex: [],
         outputRegex: [
             {
@@ -167,7 +171,7 @@ export const DEFAULT_SETTINGS = {
                 title: '图片规划 · 正文输入',
                 enabled: true,
                 role: 'user',
-                content: '正文如下：\n{{body}}\n\n请输出 JSON 数组，最多 {{max_images}} 项。每项格式：{"anchor":"正文里用于定位的连续原文短句","placement":"after","occurrence":1,"prompt":"英文或中英混合生图提示词"}。anchor 必须逐字来自正文，尽量选择 8 到 30 个字符的唯一短句。placement 只能是 before、after 或 replace。'
+                content: '当前角色：{{character_name}}\n角色外貌提示词：\n{{character_prompt}}\n\n正文如下：\n{{body}}\n\n请输出 JSON 数组，最多 {{max_images}} 项。每项格式：{"anchor":"正文里用于定位的连续原文短句","placement":"after","occurrence":1,"prompt":"英文或中英混合生图提示词"}。anchor 必须逐字来自正文，尽量选择 8 到 30 个字符的唯一短句。placement 只能是 before、after 或 replace。生成 prompt 时应融合角色外貌提示词，保持同一角色外观一致。'
             }
         ],
         bizyair: {
