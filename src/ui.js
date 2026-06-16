@@ -459,7 +459,14 @@ export class SettingsUi {
             ${this.#characterPromptHtml()}
             ${this.#regexSection('正文提取正则', 'image.inputRegex', image.inputRegex, '先从 AI 回复中提取/清洗需要规划插图的正文，再交给图片规划模型。')}
             ${this.#promptSection('图片规划提示词条目栈', 'image.promptEntries', image.promptEntries)}
-            ${this.#regexSection('图片规划输出正则', 'image.outputRegex', image.outputRegex, '模型返回后先处理，再解析 JSON。')}
+            <section class="ttbm-section">
+                <h3>图片规划 XML 标签</h3>
+                <div class="ttbm-grid">
+                    <label>插入位置标签<input class="text_pole" data-setting="image.positionTag" value="${escapeHtml(image.positionTag || 'position')}" placeholder="position"></label>
+                    <label>正面提示词标签<input class="text_pole" data-setting="image.promptTag" value="${escapeHtml(image.promptTag || 'positive_prompt')}" placeholder="positive_prompt"></label>
+                </div>
+                <p class="ttbm-hint">程序会把正文切成带序号的 <code>&lt;segment id="..."&gt;</code> 分片并注册为 <code>{{body_segments}}</code>。规划模型只需要输出这两个标签：位置标签填分片序号，正面提示词标签填 BizyAir prompt。</p>
+            </section>
             <section class="ttbm-section">
                 <h3>BizyAir API</h3>
                 <div class="ttbm-grid">
@@ -493,12 +500,6 @@ export class SettingsUi {
                 <label>BizyAir API Key（可用逗号或换行填多个，当前版本使用第一个）<textarea class="text_pole ttbm-code" rows="3" data-setting="image.bizyair.apiKeys">${escapeHtml(image.bizyair.apiKeys)}</textarea></label>
                 <label>正面提示词永久前缀<textarea class="text_pole ttbm-code" rows="5" data-setting="image.bizyair.positivePromptPrefix">${escapeHtml(image.bizyair.positivePromptPrefix || '')}</textarea></label>
                 <label>负面提示词<textarea class="text_pole ttbm-code" rows="4" data-setting="image.bizyair.negativePrompt">${escapeHtml(image.bizyair.negativePrompt)}</textarea></label>
-                <details class="ttbm-card ttbm-bizyair-advanced">
-                    <summary>高级：input_values JSON 模板（通常不用手改）</summary>
-                    <p class="ttbm-hint">这不是单独的功能模块，而是 BizyAir 工作流的字段映射：插件最终会把这里渲染出的对象作为 <code>input_values</code> POST 给 <code>/webapp/task/openapi/create</code>。解析示例代码或切换已保存模板时会自动维护它。</p>
-                    <label>模板内容<textarea class="text_pole ttbm-code" rows="14" data-setting="image.bizyair.inputValuesTemplate">${escapeHtml(image.bizyair.inputValuesTemplate)}</textarea></label>
-                    <p class="ttbm-hint">可用宏：{{prompt}}、{{positive_prompt}}、{{ai_prompt}}、{{positive_prompt_prefix}}、{{negative_prompt}}、{{seed}}、{{width}}、{{height}}、{{steps}}、{{cfg}}、{{sampler}}、{{scheduler}}、{{denoise}}。字符串宏会自动做 JSON 字符串内容转义，所以请保留模板里的双引号。</p>
-                </details>
             </section>
         `;
     }
@@ -655,7 +656,7 @@ export class SettingsUi {
         return `
             <section class="ttbm-section">
                 <div class="ttbm-section-head"><h3>${title}</h3><button class="menu_button" type="button" data-add-entry="${path}">新增条目</button></div>
-                <p class="ttbm-hint">按从上到下的顺序发送。常用宏：{{chat}}、{{body}}、{{assistant}}、{{floor}}、{{floor_start}}、{{floor_end}}、{{total_floors}}、{{eligible_floor}}、{{previous_large}}、{{small_summaries}}、{{memory}}、{{previous_status}}、{{last_user}}、{{last_assistant}}、{{max_images}}、{{character_prompt}}、{{appearance_prompt}}、{{character_name}}、{{character_key}}、{{character_id}}、{{character_file}}</p>
+                <p class="ttbm-hint">按从上到下的顺序发送。常用宏：{{chat}}、{{body}}、{{body_segments}}、{{segmented_body}}、{{source_segments}}、{{assistant}}、{{floor}}、{{floor_start}}、{{floor_end}}、{{total_floors}}、{{eligible_floor}}、{{previous_large}}、{{small_summaries}}、{{memory}}、{{previous_status}}、{{last_user}}、{{last_assistant}}、{{max_images}}、{{position_tag}}、{{prompt_tag}}、{{character_prompt}}、{{appearance_prompt}}、{{character_name}}、{{character_key}}、{{character_id}}、{{character_file}}</p>
                 <div class="ttbm-list">${promptEntriesHtml(entries, path)}</div>
             </section>
         `;

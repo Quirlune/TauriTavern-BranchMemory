@@ -8,6 +8,7 @@ import {
     recipeHash,
     renderTemplate,
     roleOf,
+    segmentImageSource,
     transcriptForFloorRange
 } from './core.js';
 import { characterPromptInfo, chatIdentity, readFullHistory, scopeHashForRef } from './history.js';
@@ -130,6 +131,84 @@ function textNodeWalker(root) {
     return nodes;
 }
 
+function normalizeLocatorText(value) {
+    return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function normalizedTextIndex(root) {
+    const chars = [];
+    const map = [];
+    let previousWasSpace = false;
+    for (const node of textNodeWalker(root)) {
+        const value = node.nodeValue || '';
+        for (let offset = 0; offset < value.length; offset += 1) {
+            const char = value[offset];
+            if (/\s/.test(char)) {
+                if (!previousWasSpace) {
+                    chars.push(' ');
+                    map.push({ node, offset });
+                    previousWasSpace = true;
+                }
+                continue;
+            }
+            chars.push(char);
+            map.push({ node, offset });
+            previousWasSpace = false;
+        }
+    }
+    return { text: chars.join(''), map };
+}
+
+function normalizedRange(root, needle, occurrence = 1) {
+    const target = normalizeLocatorText(needle);
+    if (!target) return null;
+    const index = normalizedTextIndex(root);
+    let seen = 0;
+    let searchFrom = 0;
+    while (searchFrom <= index.text.length) {
+        const start = index.text.indexOf(target, searchFrom);
+        if (start < 0) break;
+        seen += 1;
+        if (seen === occurrence) {
+            return {
+                start: index.map[start],
+                end: index.map[start + target.length - 1]
+            };
+        }
+        searchFrom = start + Math.max(1, target.length);
+    }
+    return null;
+}
+
+function lastNormalizedRange(root, needle) {
+    const target = normalizeLocatorText(needle);
+    if (!target) return null;
+    const index = normalizedTextIndex(root);
+    const start = index.text.lastIndexOf(target);
+    if (start < 0) return null;
+    return {
+        start: index.map[start],
+        end: index.map[start + target.length - 1]
+    };
+}
+
+function insertAfterMappedPosition(position, node) {
+    if (!position?.node?.parentNode) return false;
+    const after = position.node.splitText(position.offset + 1);
+    after.parentNode.insertBefore(node, after);
+    return true;
+}
+
+function insertAfterSegment(root, item, node) {
+    if (item.contentWrapped && item.isLastSegment) {
+        const closing = lastNormalizedRange(root, '</content>');
+        if (insertAfterMappedPosition(closing?.end, node)) return true;
+    }
+
+    const range = normalizedRange(root, item.segmentText, item.segmentOccurrence || 1);
+    return insertAfterMappedPosition(range?.end, node);
+}
+
 function insertAtAnchor(root, anchor, occurrence, placement, node) {
     let seen = 0;
     for (const textNode of textNodeWalker(root)) {
@@ -174,13 +253,27 @@ function renderImageItem(record, item) {
         wrapper.className = 'ttbm-image-inline';
         wrapper.dataset.ttbmImageSlot = slotId;
         wrapper.dataset.ttbmImageAnchor = item.anchor || '';
-        const inserted = insertAtAnchor(root, item.anchor, item.occurrence || 1, item.placement || 'after', wrapper);
+        wrapper.dataset.ttbmImageSegment = item.segmentIndex || '';
+        let inserted = false;
+        if (item.segmentText) {
+            inserted = insertAfterSegment(root, item, wrapper);
+        }
+        if (!inserted && item.anchor) {
+            inserted = insertAtAnchor(root, item.anchor, item.occurrence || 1, item.placement || 'after', wrapper);
+        }
         if (!inserted) {
             root.appendChild(document.createTextNode('\n'));
             root.appendChild(wrapper);
         }
     }
+    const contentBreakBefore = item.contentWrapped && !item.isLastSegment
+        ? '<span class="ttbm-image-content-boundary">&lt;/content&gt;</span>'
+        : '';
+    const contentBreakAfter = item.contentWrapped && !item.isLastSegment
+        ? '<span class="ttbm-image-content-boundary">&lt;content&gt;</span>'
+        : '';
     wrapper.innerHTML = `
+        ${contentBreakBefore}
         <span class="ttbm-image-card">
             <img src="${escapeAttribute(item.imageUrl)}" alt="${escapeAttribute(item.prompt || 'BizyAir image')}" loading="lazy">
             <details>
@@ -188,6 +281,7 @@ function renderImageItem(record, item) {
                 <pre>${escapeAttribute(item.prompt || '')}</pre>
             </details>
         </span>
+        ${contentBreakAfter}
     `;
     return true;
 }
@@ -313,11 +407,12 @@ export class ImagePipeline {
         const snapshot = await readFullHistory(handle);
         const character = characterPromptRecord(settings, characterPromptInfo(ref));
         const recipe = recipeHash({
-            version: 1,
+            version: 2,
             api: settings.image.api,
             promptEntries: settings.image.promptEntries,
             inputRegex: settings.image.inputRegex,
-            outputRegex: settings.image.outputRegex,
+            positionTag: settings.image.positionTag || 'position',
+            promptTag: settings.image.promptTag || 'positive_prompt',
             character: {
                 key: character.key,
                 prompt: character.prompt
@@ -347,9 +442,16 @@ export class ImagePipeline {
 
         const source = applyRegexRules(String(row.message?.mes || ''), settings.image.inputRegex).trim();
         if (!source) return;
+        const segmentedSource = segmentImageSource(source);
+        if (!segmentedSource.segments.length) return;
         const startFloor = Math.max(1, row.floor - settings.image.contextFloors + 1);
+        const positionTag = settings.image.positionTag || 'position';
+        const promptTag = settings.image.promptTag || 'positive_prompt';
         const prompt = promptEntriesToMessages(settings.image.promptEntries, {
             body: source,
+            body_segments: segmentedSource.formatted,
+            segmented_body: segmentedSource.formatted,
+            source_segments: segmentedSource.formatted,
             assistant: String(row.message?.mes || ''),
             chat: transcriptForFloorRange(snapshot, startFloor, row.floor, []),
             floor: row.floor,
@@ -364,26 +466,35 @@ export class ImagePipeline {
             character_name: character.label,
             character_key: character.key,
             character_id: character.characterId,
-            character_file: character.fileName
+            character_file: character.fileName,
+            position_tag: positionTag,
+            prompt_tag: promptTag
         });
         if (!prompt.length) throw new Error('图片规划没有启用的提示词条目。');
 
         const rawPlan = await this.generate({ prompt, responseLength: settings.image.responseLength, apiConfig: settings.image.api });
         if (chatIdentity(this.storage.currentRef()) !== identity) return;
-        const planText = applyRegexRules(String(rawPlan || '').trim(), settings.image.outputRegex).trim();
-        const plan = parseImagePlan(planText, { maxItems: settings.image.maxImagesPerMessage });
+        const planText = String(rawPlan || '').trim();
+        const plan = parseImagePlan(planText, { maxItems: settings.image.maxImagesPerMessage, positionTag, promptTag })
+            .filter(item => item.segmentIndex >= 1 && item.segmentIndex <= segmentedSource.segments.length);
         if (!plan.length) return;
 
         const items = [];
         this.abortController = new AbortController();
         try {
             for (const item of plan) {
-                const slotId = hashString(`${key}:${item.id}:${item.anchor}:${item.prompt}`);
+                const segment = segmentedSource.segments[item.segmentIndex - 1];
+                if (!segment) continue;
+                const slotId = hashString(`${key}:${item.id}:${item.segmentIndex}:${item.prompt}`);
                 const remoteUrl = await this.client.generate(item.prompt, this.abortController.signal);
                 const imageUrl = await cacheImageUrl(remoteUrl, settings.image.cacheAsDataUrl !== false);
                 items.push({
                     ...item,
                     id: slotId,
+                    segmentText: segment.text,
+                    segmentOccurrence: segment.occurrence,
+                    contentWrapped: segmentedSource.contentWrapped,
+                    isLastSegment: item.segmentIndex === segmentedSource.segments.length,
                     remoteUrl,
                     imageUrl,
                     createdAt: new Date().toISOString()
@@ -392,6 +503,7 @@ export class ImagePipeline {
         } finally {
             this.abortController = null;
         }
+        if (!items.length) return;
 
         const record = {
             version: 1,

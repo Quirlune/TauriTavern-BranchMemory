@@ -145,35 +145,28 @@ export const DEFAULT_SETTINGS = {
         responseLength: 900,
         maxImagesPerMessage: 3,
         cacheAsDataUrl: true,
+        positionTag: 'position',
+        promptTag: 'positive_prompt',
         characterPrompts: {
             fallback: '',
             records: {}
         },
         inputRegex: [],
-        outputRegex: [
-            {
-                id: 'image-plan-json',
-                name: '提取 JSON 代码块（默认关闭）',
-                enabled: false,
-                pattern: '^[\\s\\S]*?```(?:json)?\\s*([\\s\\S]*?)```[\\s\\S]*$',
-                flags: 'i',
-                replacement: '$1'
-            }
-        ],
+        outputRegex: [],
         promptEntries: [
             {
                 id: 'image-plan-system',
                 title: '图片规划 · 系统约束',
                 enabled: true,
                 role: 'system',
-                content: '你是插图导演。你只负责从正文中选择 2 到 3 个适合插图的位置，并为每个位置写出 BizyAir 生图提示词。不要续写剧情。必须输出 JSON，不要输出解释。只写主体、动作、场景、构图、光影和角色外貌；固定质量词前缀与负面提示词由插件负责，不需要你重复。'
+                content: '你是插图导演。你只负责从已编号的正文分片中选择适合插图的位置，并为每个位置写出 BizyAir 正面提示词。不要续写剧情，不要解释。必须输出 XML，不要输出 JSON。每张图使用一组 <image>...</image>，其中必须包含 <{{position_tag}}>分片序号</{{position_tag}}> 和 <{{prompt_tag}}>正面提示词</{{prompt_tag}}>。只写主体、动作、场景、构图、光影和角色外貌；固定质量词前缀与负面提示词由插件负责，不需要你重复。'
             },
             {
                 id: 'image-plan-user',
                 title: '图片规划 · 正文输入',
                 enabled: true,
                 role: 'user',
-                content: '当前角色：{{character_name}}\n角色外貌提示词：\n{{character_prompt}}\n\n正文如下：\n{{body}}\n\n请输出 JSON 数组，最多 {{max_images}} 项。每项格式：{"anchor":"正文里用于定位的连续原文短句","placement":"after","occurrence":1,"prompt":"英文或中英混合生图提示词"}。anchor 必须逐字来自正文，尽量选择 8 到 30 个字符的唯一短句。placement 只能是 before、after 或 replace。生成 prompt 时应融合角色外貌提示词，保持同一角色外观一致。'
+                content: '当前角色：{{character_name}}\n角色外貌提示词：\n{{character_prompt}}\n\n已按段落编号的正文：\n{{body_segments}}\n\n请最多选择 {{max_images}} 个分片。每张图输出：\n<image>\n<{{position_tag}}>分片序号</{{position_tag}}>\n<{{prompt_tag}}>英文或中英混合正面生图提示词</{{prompt_tag}}>\n</image>\n\n分片序号必须来自 <segment id="...">，不要使用原文锚点。生成正面提示词时应融合角色外貌提示词，保持同一角色外观一致。'
             }
         ],
         bizyair: {

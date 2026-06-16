@@ -172,6 +172,134 @@ export function processStatusOutput(rawOutput, renderRules = [], injectionRules 
     };
 }
 
+function escapeXmlText(value) {
+    return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;');
+}
+
+function normalizeLocatorText(value) {
+    return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function stripOuterContentTags(value) {
+    const text = normalizeText(value).trim();
+    const match = text.match(/^<content\b[^>]*>\s*([\s\S]*?)\s*<\/content>\s*$/i);
+    return {
+        text: match ? match[1] : text,
+        contentWrapped: Boolean(match)
+    };
+}
+
+export function segmentImageSource(source) {
+    const { text, contentWrapped } = stripOuterContentTags(source);
+    const trimmed = text.trim();
+    if (!trimmed) {
+        return { contentWrapped, segments: [], formatted: '<source_segments></source_segments>' };
+    }
+
+    const delimiter = /\n\s*\n/.test(trimmed) ? /\n\s*\n+/ : /\n+/;
+    const seen = new Map();
+    const segments = trimmed
+        .split(delimiter)
+        .map(item => item.trim())
+        .filter(Boolean)
+        .map((item, index) => {
+            const normalized = normalizeLocatorText(item);
+            const occurrence = (seen.get(normalized) || 0) + 1;
+            seen.set(normalized, occurrence);
+            return {
+                id: index + 1,
+                text: item,
+                normalized,
+                occurrence
+            };
+        });
+
+    const lines = ['<source_segments>'];
+    for (const segment of segments) {
+        lines.push(`<segment id="${segment.id}">`);
+        lines.push(escapeXmlText(segment.text));
+        lines.push('</segment>');
+    }
+    lines.push('</source_segments>');
+
+    return {
+        contentWrapped,
+        segments,
+        formatted: lines.join('\n')
+    };
+}
+
+function cleanXmlTagName(value, fallback) {
+    const raw = String(value || '').trim()
+        .replace(/^<\s*\/?/, '')
+        .replace(/\s*\/?>$/, '')
+        .split(/\s+/)[0];
+    return /^[A-Za-z_][\w:.-]*$/.test(raw) ? raw : fallback;
+}
+
+function escapedRegExp(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function decodeXmlText(value) {
+    return String(value ?? '')
+        .trim()
+        .replace(/^<!\[CDATA\[([\s\S]*)\]\]>$/i, '$1')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#039;/g, "'")
+        .replace(/&apos;/g, "'")
+        .replace(/&amp;/g, '&')
+        .trim();
+}
+
+function xmlTagValues(source, tagName) {
+    const tag = escapedRegExp(tagName);
+    const pattern = new RegExp(`<\\s*${tag}(?:\\s+[^>]*)?>([\\s\\S]*?)<\\s*\\/\\s*${tag}\\s*>`, 'gi');
+    const values = [];
+    let match;
+    while ((match = pattern.exec(source))) {
+        values.push(decodeXmlText(match[1]));
+    }
+    return values;
+}
+
+export function parseImagePlan(rawOutput, { maxItems = 3, positionTag = 'position', promptTag = 'positive_prompt' } = {}) {
+    const source = String(rawOutput ?? '').trim();
+    if (!source) return [];
+
+    const resolvedPositionTag = cleanXmlTagName(positionTag, 'position');
+    const resolvedPromptTag = cleanXmlTagName(promptTag, 'positive_prompt');
+    const positions = xmlTagValues(source, resolvedPositionTag);
+    const prompts = xmlTagValues(source, resolvedPromptTag);
+    const limit = Math.max(1, Math.min(6, Math.floor(Number(maxItems) || 3)));
+    const count = Math.min(positions.length, prompts.length, limit);
+
+    if (!count) {
+        throw new Error(`图片规划输出没有找到 XML 标签 <${resolvedPositionTag}> 和 <${resolvedPromptTag}>。`);
+    }
+
+    const items = [];
+    for (let index = 0; index < count; index += 1) {
+        const match = positions[index].match(/\d+/);
+        const segmentIndex = Math.max(1, Math.floor(Number(match?.[0]) || 0));
+        const prompt = prompts[index].trim();
+        if (!segmentIndex || !prompt) continue;
+        items.push({
+            id: `image-${index + 1}`,
+            segmentIndex,
+            prompt,
+            placement: 'after',
+            reason: ''
+        });
+    }
+    return items;
+}
+
 function extractJsonLike(text) {
     const source = String(text ?? '').trim();
     const fenced = source.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -187,7 +315,7 @@ function extractJsonLike(text) {
     return end >= start ? source.slice(start, end + 1) : source.slice(start);
 }
 
-export function parseImagePlan(rawOutput, { maxItems = 3 } = {}) {
+function parseImagePlanLegacy(rawOutput, { maxItems = 3 } = {}) {
     const text = extractJsonLike(rawOutput);
     let parsed;
     try {

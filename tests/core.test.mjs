@@ -10,6 +10,7 @@ import {
     processStatusOutput,
     promptEntriesToMessages,
     selectActiveMemory,
+    segmentImageSource,
     statusInsertionIndex,
     transcriptForFloorRange
 } from '../src/core.js';
@@ -113,20 +114,28 @@ test('request monitor redacts credentials without hiding generation parameters',
     assert.equal(sanitized.nested.auth_mode, 'oauth');
 });
 
-test('image planning output parses anchored insertion slots', () => {
-    const plan = parseImagePlan('```json\n{"images":[{"anchor":"她抬头看向雨夜","placement":"after","occurrence":1,"prompt":"girl looking at rainy night, cinematic"}]}\n```', { maxItems: 3 });
+test('image source is segmented into numbered XML blocks', () => {
+    const segmented = segmentImageSource('<content>\n她抬头看向雨夜。\n\n街灯在水面摇晃。\n</content>');
+    assert.equal(segmented.contentWrapped, true);
+    assert.equal(segmented.segments.length, 2);
+    assert.equal(segmented.segments[0].id, 1);
+    assert.match(segmented.formatted, /<segment id="1">/);
+    assert.match(segmented.formatted, /她抬头看向雨夜。/);
+});
+
+test('image planning output parses XML insertion slots', () => {
+    const plan = parseImagePlan('<image><position>2</position><positive_prompt>girl looking at rainy night, cinematic</positive_prompt></image>', { maxItems: 3 });
     assert.deepEqual(plan, [{
         id: 'image-1',
-        anchor: '她抬头看向雨夜',
+        segmentIndex: 2,
         prompt: 'girl looking at rainy night, cinematic',
         placement: 'after',
-        occurrence: 1,
         reason: ''
     }]);
 });
 
-test('image planning output reports invalid json clearly', () => {
-    assert.throws(() => parseImagePlan('not json'), /图片规划输出不是有效 JSON/);
+test('image planning output reports missing xml tags clearly', () => {
+    assert.throws(() => parseImagePlan('not json'), /图片规划输出没有找到 XML 标签/);
 });
 
 test('character prompt info follows the active character ref', () => {

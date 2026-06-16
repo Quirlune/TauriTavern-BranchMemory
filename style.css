@@ -313,6 +313,12 @@ body.ttbm-modal-open {
     scroll-margin-bottom: 18px;
 }
 
+.ttbm-image-content-boundary {
+    display: block;
+    margin: 4px 0;
+    white-space: pre-wrap;
+}
+
 .ttbm-image-card {
     display: block;
     width: min(100%, 560px);
