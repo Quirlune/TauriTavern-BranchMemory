@@ -309,57 +309,23 @@ body.ttbm-modal-open {
 
 .ttbm-image-inline {
     display: block;
-    margin: 12px 0;
+    width: min(100%, calc(100vw - 32px));
+    margin: 18px auto;
     scroll-margin-bottom: 18px;
+    clear: both;
 }
 
-.ttbm-image-content-boundary {
-    display: block;
-    margin: 4px 0;
-    white-space: pre-wrap;
-}
-
-.ttbm-image-card {
-    display: block;
-    width: min(100%, 560px);
-    padding: 8px;
-    border: 1px solid color-mix(in srgb, var(--SmartThemeBodyColor) 15%, transparent);
-    border-radius: 13px;
-    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 72%, rgba(0, 0, 0, .18));
-    box-sizing: border-box;
-}
-
-.ttbm-image-card img {
+.ttbm-image-element {
     display: block;
     width: 100%;
-    max-height: 72vh;
+    height: auto;
+    max-width: 100%;
+    max-height: 86vh;
+    margin: 0 auto;
     object-fit: contain;
-    border-radius: 10px;
-    background: rgba(0, 0, 0, .22);
-}
-
-.ttbm-image-card details {
-    margin-top: 8px;
-    font-size: 12px;
-    opacity: .74;
-}
-
-.ttbm-image-card summary {
-    cursor: pointer;
-    user-select: none;
-}
-
-.ttbm-image-card pre {
-    margin: 6px 0 0;
-    padding: 8px;
-    max-height: 180px;
-    overflow: auto;
-    border-radius: 8px;
-    background: rgba(0, 0, 0, .22);
-    color: inherit;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
 }
 
 @media (max-width: 700px) {
@@ -414,7 +380,4 @@ body.ttbm-modal-open {
         flex: 1;
     }
 
-    .ttbm-image-card {
-        width: 100%;
-    }
 }

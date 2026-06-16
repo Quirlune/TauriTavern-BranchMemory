@@ -281,6 +281,57 @@ function insertAtAnchor(root, anchor, occurrence, placement, node) {
     return false;
 }
 
+function directChildWithin(node, ancestor) {
+    let current = node;
+    while (current && current.parentNode !== ancestor) {
+        current = current.parentNode;
+    }
+    return current || null;
+}
+
+function cloneWithoutId(element) {
+    const clone = element.cloneNode(false);
+    clone.removeAttribute?.('id');
+    return clone;
+}
+
+function moveImageOutsideGalContainer(wrapper, item) {
+    if (!item.contentWrapped) return false;
+    const content = wrapper.closest?.('.gal-content');
+    const container = content?.closest?.('.gal-container');
+    if (!content || !container?.parentNode) return false;
+
+    const boundary = directChildWithin(wrapper, content);
+    if (boundary !== wrapper) return false;
+
+    const parent = container.parentNode;
+    if (item.isLastSegment) {
+        content.removeChild(wrapper);
+        parent.insertBefore(wrapper, container.nextSibling);
+        return true;
+    }
+
+    const afterContainer = cloneWithoutId(container);
+    const afterContent = cloneWithoutId(content);
+    let next = wrapper.nextSibling;
+    while (next) {
+        const moving = next;
+        next = next.nextSibling;
+        afterContent.appendChild(moving);
+    }
+
+    content.removeChild(wrapper);
+    afterContainer.appendChild(afterContent);
+
+    const footer = Array.from(container.children)
+        .find(child => child !== content && child.classList?.contains('gal-footer'));
+    if (footer) afterContainer.appendChild(footer.cloneNode(true));
+
+    parent.insertBefore(wrapper, container.nextSibling);
+    parent.insertBefore(afterContainer, wrapper.nextSibling);
+    return true;
+}
+
 function findMessageTextElement(messageIndex) {
     const message = document.querySelector(`.mes[mesid="${cssEscape(messageIndex)}"]`)
         || document.querySelector(`#chat .mes:nth-of-type(${Number(messageIndex) + 1})`);
@@ -310,22 +361,9 @@ function renderImageItem(record, item) {
             root.appendChild(wrapper);
         }
     }
-    const contentBreakBefore = item.contentWrapped && !item.isLastSegment
-        ? '<span class="ttbm-image-content-boundary">&lt;/content&gt;</span>'
-        : '';
-    const contentBreakAfter = item.contentWrapped && !item.isLastSegment
-        ? '<span class="ttbm-image-content-boundary">&lt;content&gt;</span>'
-        : '';
+    moveImageOutsideGalContainer(wrapper, item);
     wrapper.innerHTML = `
-        ${contentBreakBefore}
-        <span class="ttbm-image-card">
-            <img src="${escapeAttribute(item.imageUrl)}" alt="${escapeAttribute(item.prompt || 'BizyAir image')}" loading="lazy">
-            <details>
-                <summary>图片提示词</summary>
-                <pre>${escapeAttribute(item.prompt || '')}</pre>
-            </details>
-        </span>
-        ${contentBreakAfter}
+        <img class="ttbm-image-element" src="${escapeAttribute(item.imageUrl)}" alt="${escapeAttribute(item.prompt || 'BizyAir image')}" loading="lazy">
     `;
     return true;
 }
