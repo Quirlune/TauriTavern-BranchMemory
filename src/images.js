@@ -22,6 +22,22 @@ function latestAssistantRow(snapshot) {
     return null;
 }
 
+function imageDebugEnabled(settings) {
+    return Boolean(settings?.image?.debugNotifications);
+}
+
+function notifyImageDebug(settings, message, level = 'info') {
+    if (!imageDebugEnabled(settings)) return;
+    const text = `Branch Memory 图片测试：${message}`;
+    try {
+        const method = globalThis.toastr?.[level] || globalThis.toastr?.info;
+        if (method) method(text);
+        else console.info(text);
+    } catch {
+        console.info(text);
+    }
+}
+
 function lastMessage(snapshot, role) {
     for (let index = snapshot.rows.length - 1; index >= 0; index -= 1) {
         if (snapshot.rows[index].role === role) {
@@ -107,15 +123,26 @@ async function blobToDataUrl(blob) {
     });
 }
 
-async function cacheImageUrl(url, enabled, signal) {
-    if (!enabled || String(url).startsWith('data:')) return String(url);
+async function cacheImageUrl(url, enabled, signal, settings, label = '图片') {
+    if (!enabled) {
+        notifyImageDebug(settings, `${label} data URL 缓存关闭，保留远程 URL`);
+        return String(url);
+    }
+    if (String(url).startsWith('data:')) {
+        notifyImageDebug(settings, `${label} 已是 data URL，跳过下载缓存`);
+        return String(url);
+    }
+    notifyImageDebug(settings, `${label} 开始下载缓存`);
     try {
         const response = await fetch(url, { mode: 'cors', signal });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return await blobToDataUrl(await response.blob());
+        const dataUrl = await blobToDataUrl(await response.blob());
+        notifyImageDebug(settings, `${label} 已缓存为 data URL`, 'success');
+        return dataUrl;
     } catch (error) {
         if (signal?.aborted) throw signal.reason || error;
         console.warn('[BranchMemory] BizyAir image cache fallback to remote URL', error);
+        notifyImageDebug(settings, `${label} 缓存失败，保留远程 URL：${error.message || error}`, 'warning');
         return String(url);
     }
 }
@@ -313,13 +340,18 @@ export class BizyAirClient {
         this.settingsProvider = settingsProvider;
     }
 
-    async generate(prompt, signal) {
-        const image = this.settingsProvider().image;
+    async generate(prompt, signal, { label = '图片' } = {}) {
+        const settings = this.settingsProvider();
+        const image = settings.image;
         const keys = normalizeList(image.bizyair.apiKeys);
         const apiKey = keys[0] || '';
-        if (!apiKey) throw new Error('图片模块尚未填写 BizyAir API Key。');
+        if (!apiKey) {
+            notifyImageDebug(settings, `${label} 缺少 BizyAir API Key`, 'error');
+            throw new Error('图片模块尚未填写 BizyAir API Key。');
+        }
 
         const seed = image.bizyair.randomSeed ? randomSeed() : asNumber(image.bizyair.seed, 101);
+        notifyImageDebug(settings, `${label} 准备 BizyAir create，seed=${seed}`);
         const positivePrompt = joinPositivePrompt(image.bizyair.positivePromptPrefix, prompt);
         const values = {
             prompt: jsonStringContent(positivePrompt),
@@ -336,7 +368,14 @@ export class BizyAirClient {
             scheduler: jsonStringContent(image.bizyair.scheduler || 'simple'),
             denoise: asNumber(image.bizyair.denoise, 1)
         };
-        const inputValues = JSON.parse(renderTemplate(image.bizyair.inputValuesTemplate, values));
+        let inputValues;
+        try {
+            inputValues = JSON.parse(renderTemplate(image.bizyair.inputValuesTemplate, values));
+        } catch (error) {
+            notifyImageDebug(settings, `${label} input_values 模板渲染失败：${error.message}`, 'error');
+            throw error;
+        }
+        notifyImageDebug(settings, `${label} 提交 BizyAir create，Web App ID=${asNumber(image.bizyair.webAppId, 48570)}`);
         const createResponse = await fetch('https://api.bizyair.cn/w/v1/webapp/task/openapi/create', {
             method: 'POST',
             headers: {
@@ -352,36 +391,55 @@ export class BizyAirClient {
         });
         const createResult = await createResponse.json();
         if (!createResponse.ok) {
+            notifyImageDebug(settings, `${label} BizyAir create 失败：${createResult.message || createResult.error || createResponse.status}`, 'error');
             throw new Error(createResult.message || createResult.error || 'BizyAir 创建任务失败。');
         }
 
         const immediate = getFinalImage(createResult.outputs);
-        if (immediate) return immediate;
+        if (immediate) {
+            notifyImageDebug(settings, `${label} BizyAir create 直接返回图片`, 'success');
+            return immediate;
+        }
         const taskId = createResult.request_id || createResult.task_id;
-        if (!taskId) throw new Error('BizyAir 未返回图片或任务 ID。');
-        return this.#poll(taskId, apiKey, signal);
+        if (!taskId) {
+            notifyImageDebug(settings, `${label} BizyAir 未返回图片或任务 ID`, 'error');
+            throw new Error('BizyAir 未返回图片或任务 ID。');
+        }
+        notifyImageDebug(settings, `${label} BizyAir task=${taskId}，开始轮询`);
+        return this.#poll(taskId, apiKey, signal, { label });
     }
 
-    async #poll(taskId, apiKey, signal) {
-        const image = this.settingsProvider().image;
+    async #poll(taskId, apiKey, signal, { label = '图片' } = {}) {
+        const settings = this.settingsProvider();
+        const image = settings.image;
         const maxPolls = Math.max(1, Math.floor(Number(image.bizyair.maxPolls) || 60));
         const intervalMs = Math.max(500, Math.floor(Number(image.bizyair.pollIntervalMs) || 2000));
         for (let index = 0; index < maxPolls; index += 1) {
+            notifyImageDebug(settings, `${label} 等待轮询 ${index + 1}/${maxPolls}，${intervalMs}ms`);
             await delay(intervalMs, signal);
             const response = await fetch(`https://api.bizyair.cn/w/v1/webapp/task/openapi/query?task_id=${encodeURIComponent(taskId)}`, {
                 headers: { 'Authorization': `Bearer ${apiKey}` },
                 signal
             });
             const result = await response.json();
-            if (!response.ok) throw new Error(result.message || result.error || 'BizyAir 查询任务失败。');
+            if (!response.ok) {
+                notifyImageDebug(settings, `${label} BizyAir query 失败：${result.message || result.error || response.status}`, 'error');
+                throw new Error(result.message || result.error || 'BizyAir 查询任务失败。');
+            }
+            notifyImageDebug(settings, `${label} BizyAir 状态：${result.status || 'unknown'}`);
             if (String(result.status || '').toLowerCase() === 'success') {
                 const imageUrl = getFinalImage(result.outputs);
-                if (imageUrl) return imageUrl;
+                if (imageUrl) {
+                    notifyImageDebug(settings, `${label} BizyAir 生成成功`, 'success');
+                    return imageUrl;
+                }
             }
             if (String(result.status || '').toLowerCase() === 'failed') {
+                notifyImageDebug(settings, `${label} BizyAir 生成失败：${result.error || result.message || 'failed'}`, 'error');
                 throw new Error(result.error || result.message || 'BizyAir 生成失败。');
             }
         }
+        notifyImageDebug(settings, `${label} BizyAir 等待图片生成超时`, 'error');
         throw new Error('BizyAir 等待图片生成超时。');
     }
 }
@@ -406,13 +464,16 @@ export class ImagePipeline {
     }
 
     cancel() {
+        notifyImageDebug(this.getSettings(), '收到取消图片生成请求，正在中断并发任务', 'warning');
         this.abortController?.abort(new Error('图片生成已取消。'));
         this.abortController = null;
     }
 
     async refresh({ generate = false, reason = 'refresh' } = {}) {
         const settings = this.getSettings();
+        notifyImageDebug(settings, `刷新图片管线：reason=${reason}，generate=${generate ? 'true' : 'false'}`);
         if (!settings.enabled || !settings.image?.enabled) {
+            notifyImageDebug(settings, '扩展或图片模块未启用，移除现有图片占位', 'warning');
             document.querySelectorAll('[data-ttbm-image-slot]').forEach(node => node.remove());
             return;
         }
@@ -452,24 +513,47 @@ export class ImagePipeline {
             }
         });
         document.querySelectorAll('[data-ttbm-image-slot]').forEach(node => node.remove());
-        await this.#renderCached({ snapshot, scopeHash, recipe });
+        notifyImageDebug(settings, '开始回渲染已有图片缓存');
+        const renderedCacheCount = await this.#renderCached({ snapshot, scopeHash, recipe });
+        notifyImageDebug(settings, `缓存回渲染完成：${renderedCacheCount} 条记录`);
 
-        if (!generate || (!settings.image.autoGenerate && reason !== 'manual')) return;
+        if (!generate) {
+            notifyImageDebug(settings, '本次只回渲染缓存，不触发图片生成');
+            return;
+        }
+        if (!settings.image.autoGenerate && reason !== 'manual') {
+            notifyImageDebug(settings, '自动生成关闭，跳过图片生成');
+            return;
+        }
         const row = latestAssistantRow(snapshot);
-        if (!row) return;
+        if (!row) {
+            notifyImageDebug(settings, '没有找到可用于规划的最新 AI 回复', 'warning');
+            return;
+        }
         const floorInfo = getFloor(snapshot, row.floor);
-        if (!floorInfo) return;
+        if (!floorInfo) {
+            notifyImageDebug(settings, `找不到第 ${row.floor} 楼分支信息，跳过`, 'warning');
+            return;
+        }
         const key = makeCacheKey({ scopeHash, floor: row.floor, chain: floorInfo.chain, recipe });
         const existing = await this.storage.getImage(key);
         if (existing) {
+            notifyImageDebug(settings, `命中图片缓存：第 ${row.floor} 楼，${existing.items?.length || 0} 张`, 'success');
             renderImageRecord(existing);
             return;
         }
 
         const source = applyRegexRules(String(row.message?.mes || ''), settings.image.inputRegex).trim();
-        if (!source) return;
+        if (!source) {
+            notifyImageDebug(settings, '正文提取后为空，跳过图片规划', 'warning');
+            return;
+        }
         const segmentedSource = segmentImageSource(source);
-        if (!segmentedSource.segments.length) return;
+        if (!segmentedSource.segments.length) {
+            notifyImageDebug(settings, '正文分片为空，跳过图片规划', 'warning');
+            return;
+        }
+        notifyImageDebug(settings, `开始图片规划：第 ${row.floor} 楼，${segmentedSource.segments.length} 个分片`);
         const startFloor = Math.max(1, row.floor - settings.image.contextFloors + 1);
         const positionTag = settings.image.positionTag || 'position';
         const promptTag = settings.image.promptTag || 'positive_prompt';
@@ -502,12 +586,17 @@ export class ImagePipeline {
         });
         if (!prompt.length) throw new Error('图片规划没有启用的提示词条目。');
 
+        notifyImageDebug(settings, `调用图片规划模型：messages=${prompt.length}`);
         const rawPlan = await this.generate({ prompt, responseLength: settings.image.responseLength, apiConfig: settings.image.api });
         if (chatIdentity(this.storage.currentRef()) !== identity) return;
+        notifyImageDebug(settings, `图片规划模型返回：${String(rawPlan || '').length} 字符`);
         const planText = String(rawPlan || '').trim();
         const plan = parseImagePlan(planText, { maxItems: settings.image.maxImagesPerMessage, positionTag, promptTag })
             .filter(item => item.segmentIndex >= 1 && item.segmentIndex <= segmentedSource.segments.length);
-        if (!plan.length) return;
+        if (!plan.length) {
+            notifyImageDebug(settings, '图片规划解析后没有有效项目，跳过 BizyAir', 'warning');
+            return;
+        }
 
         this.abortController = new AbortController();
         const controller = this.abortController;
@@ -515,13 +604,21 @@ export class ImagePipeline {
         let items = [];
         try {
             const concurrency = Math.min(plan.length, Math.max(1, Math.floor(Number(settings.image.bizyair.concurrency) || 3)));
-            items = await mapConcurrent(plan, concurrency, async (item) => {
+            notifyImageDebug(settings, `开始 BizyAir 批量生成：${plan.length} 张，并发=${concurrency}`);
+            items = await mapConcurrent(plan, concurrency, async (item, index) => {
+                const label = `图片 ${index + 1}/${plan.length}（分片 ${item.segmentIndex}）`;
                 const segment = segmentedSource.segments[item.segmentIndex - 1];
-                if (!segment) return null;
+                if (!segment) {
+                    notifyImageDebug(settings, `${label} 找不到对应分片，跳过`, 'warning');
+                    return null;
+                }
                 const slotId = hashString(`${key}:${item.id}:${item.segmentIndex}:${item.prompt}`);
                 try {
-                    const remoteUrl = await this.client.generate(item.prompt, signal);
-                    const imageUrl = await cacheImageUrl(remoteUrl, settings.image.cacheAsDataUrl !== false, signal);
+                    notifyImageDebug(settings, `${label} 开始生成`);
+                    const remoteUrl = await this.client.generate(item.prompt, signal, { label });
+                    notifyImageDebug(settings, `${label} 获得远程图片 URL`, 'success');
+                    const imageUrl = await cacheImageUrl(remoteUrl, settings.image.cacheAsDataUrl !== false, signal, settings, label);
+                    notifyImageDebug(settings, `${label} 生成流程完成`, 'success');
                     return {
                         ...item,
                         id: slotId,
@@ -534,6 +631,7 @@ export class ImagePipeline {
                         createdAt: new Date().toISOString()
                     };
                 } catch (error) {
+                    notifyImageDebug(settings, `${label} 失败：${error.message || error}`, 'error');
                     controller.abort(error);
                     throw error;
                 }
@@ -541,7 +639,10 @@ export class ImagePipeline {
         } finally {
             if (this.abortController === controller) this.abortController = null;
         }
-        if (!items.length) return;
+        if (!items.length) {
+            notifyImageDebug(settings, 'BizyAir 没有返回可保存图片，跳过写入缓存', 'warning');
+            return;
+        }
 
         const record = {
             version: 1,
@@ -558,13 +659,15 @@ export class ImagePipeline {
             reason
         };
         await this.storage.setImage(key, record);
+        notifyImageDebug(settings, `图片记录已保存：第 ${row.floor} 楼，${items.length} 张`, 'success');
         renderImageRecord(record);
+        notifyImageDebug(settings, '图片已插回聊天正文', 'success');
         this.updateStats({ lastImageAt: record.createdAt, imageCount: items.length, imageFloor: row.floor });
     }
 
     async #renderCached({ snapshot, scopeHash, recipe }) {
         const available = new Set(await this.storage.listImageKeys());
-        if (!available.size) return;
+        if (!available.size) return 0;
         const records = [];
         for (const floor of snapshot.floors) {
             const key = makeCacheKey({ scopeHash, floor: floor.number, chain: floor.chain, recipe });
@@ -573,5 +676,6 @@ export class ImagePipeline {
             if (record) records.push(record);
         }
         records.sort((a, b) => a.messageIndex - b.messageIndex).forEach(renderImageRecord);
+        return records.length;
     }
 }

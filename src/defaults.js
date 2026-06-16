@@ -145,6 +145,7 @@ export const DEFAULT_SETTINGS = {
         responseLength: 900,
         maxImagesPerMessage: 3,
         cacheAsDataUrl: true,
+        debugNotifications: false,
         positionTag: 'position',
         promptTag: 'positive_prompt',
         characterPrompts: {

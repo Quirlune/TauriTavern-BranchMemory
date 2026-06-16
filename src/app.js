@@ -38,6 +38,7 @@ function normalizeSettings(settings) {
     settings.image.contextFloors = clampInteger(settings.image.contextFloors, 1, 1000, 2);
     settings.image.responseLength = clampInteger(settings.image.responseLength, 32, 32000, 900);
     settings.image.maxImagesPerMessage = clampInteger(settings.image.maxImagesPerMessage, 1, 3, 3);
+    settings.image.debugNotifications = Boolean(settings.image.debugNotifications);
     settings.image.bizyair.webAppId = clampInteger(settings.image.bizyair.webAppId, 1, 1000000, 48570);
     settings.image.bizyair.width = clampInteger(settings.image.bizyair.width, 64, 4096, 1024);
     settings.image.bizyair.height = clampInteger(settings.image.bizyair.height, 64, 4096, 1024);

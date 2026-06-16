@@ -449,6 +449,7 @@ export class SettingsUi {
                     <label class="ttbm-check"><input type="checkbox" data-setting="image.enabled" ${image.enabled ? 'checked' : ''}>启用图片模块</label>
                     <label class="ttbm-check"><input type="checkbox" data-setting="image.autoGenerate" ${image.autoGenerate ? 'checked' : ''}>AI 回复完成后自动规划并生成</label>
                     <label class="ttbm-check"><input type="checkbox" data-setting="image.cacheAsDataUrl" ${image.cacheAsDataUrl !== false ? 'checked' : ''}>把图片缓存为 data URL</label>
+                    <label class="ttbm-check"><input type="checkbox" data-setting="image.debugNotifications" ${image.debugNotifications ? 'checked' : ''}>测试模式通知</label>
                     ${numberField('读取最近 N 个用户楼层', 'image.contextFloors', image.contextFloors, 1, 1000)}
                     ${numberField('规划最大图片数（1-3）', 'image.maxImagesPerMessage', image.maxImagesPerMessage, 1, 3)}
                     ${numberField('规划输出 tokens', 'image.responseLength', image.responseLength, 32, 32000)}
