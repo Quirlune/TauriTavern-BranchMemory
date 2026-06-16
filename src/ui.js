@@ -99,7 +99,7 @@ export class SettingsUi {
         target.insertAdjacentHTML('beforeend', `
             <div id="ttbm-settings-entry" class="ttbm-settings-entry inline-drawer">
                 <div class="inline-drawer-toggle inline-drawer-header">
-                    <b>Branch Memory & Status</b>
+                    <b>Branch Memory, Status & Images</b>
                     <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                 </div>
                 <div class="inline-drawer-content">
@@ -123,12 +123,13 @@ export class SettingsUi {
                 <div class="ttbm-modal-backdrop" data-close-modal></div>
                 <section class="ttbm-modal-panel" role="dialog" aria-modal="true" aria-label="Branch Memory 设置">
                     <header class="ttbm-modal-head">
-                        <div><strong>Branch Memory & Status</strong><small>分支感知的叠层记忆与独立状态栏</small></div>
+                        <div><strong>Branch Memory, Status & Images</strong><small>分支记忆、独立状态栏与 BizyAir 插图</small></div>
                         <button class="menu_button" type="button" data-close-modal>关闭</button>
                     </header>
                     <nav class="ttbm-tabs">
                         <button class="menu_button" data-tab="memory" type="button">记忆模块</button>
                         <button class="menu_button" data-tab="status" type="button">状态栏模块</button>
+                        <button class="menu_button" data-tab="image" type="button">图片模块</button>
                         <button class="menu_button" data-tab="runtime" type="button">运行状态</button>
                         <button class="menu_button" data-tab="monitor" type="button">调用监控</button>
                     </nav>
@@ -283,6 +284,7 @@ export class SettingsUi {
         document.querySelectorAll('#ttbm-modal [data-tab]').forEach(button => button.classList.toggle('ttbm-active', button.dataset.tab === this.modalTab));
         if (this.modalTab === 'memory') body.innerHTML = this.#memoryHtml();
         if (this.modalTab === 'status') body.innerHTML = this.#statusHtml();
+        if (this.modalTab === 'image') body.innerHTML = this.#imageHtml();
         if (this.modalTab === 'runtime') body.innerHTML = this.#runtimeHtml();
         if (this.modalTab === 'monitor') body.innerHTML = this.#monitorHtml();
     }
@@ -385,6 +387,8 @@ export class SettingsUi {
                         <dt>可总结到</dt><dd>${stats.eligibleFloor}</dd>
                         <dt>已匹配小总结</dt><dd>${stats.smallCount}</dd>
                         <dt>已匹配大总结</dt><dd>${stats.largeCount}</dd>
+                        <dt>最近图片楼层</dt><dd>${stats.imageFloor || '-'}</dd>
+                        <dt>最近图片数量</dt><dd>${stats.imageCount || '-'}</dd>
                         <dt>当前分支链</dt><dd><code>${escapeHtml(stats.chain)}</code></dd>
                         <dt>最后刷新</dt><dd>${escapeHtml(stats.updatedAt || '')}</dd>
                     </dl>
@@ -395,6 +399,49 @@ export class SettingsUi {
             <section class="ttbm-section">
                 <h3>分支复用说明</h3>
                 <p>每条消息都会进入一条累计链指纹。分支前的消息链完全相同，因此旧摘要可以直接命中；分叉后的链会改变，只重算受影响的阶段。聊天文件名和当前绝对楼层不会被当成唯一依据。</p>
+            </section>
+        `;
+    }
+
+    #imageHtml() {
+        const image = this.settings.image;
+        return `
+            <section class="ttbm-section">
+                <div class="ttbm-grid">
+                    <label class="ttbm-check"><input type="checkbox" data-setting="image.enabled" ${image.enabled ? 'checked' : ''}>启用图片模块</label>
+                    <label class="ttbm-check"><input type="checkbox" data-setting="image.autoGenerate" ${image.autoGenerate ? 'checked' : ''}>AI 回复完成后自动规划并生成</label>
+                    <label class="ttbm-check"><input type="checkbox" data-setting="image.cacheAsDataUrl" ${image.cacheAsDataUrl !== false ? 'checked' : ''}>把图片缓存为 data URL</label>
+                    ${numberField('读取最近 N 个用户楼层', 'image.contextFloors', image.contextFloors, 1, 1000)}
+                    ${numberField('规划最大图片数（1-3）', 'image.maxImagesPerMessage', image.maxImagesPerMessage, 1, 3)}
+                    ${numberField('规划输出 tokens', 'image.responseLength', image.responseLength, 32, 32000)}
+                </div>
+                <p class="ttbm-hint">图片模块独立于记忆和状态栏。它只在 AI 回复完成后生成；已有缓存会按楼层链指纹回填到历史消息对应位置，不会因为当前不在最后一层就失效。</p>
+            </section>
+            ${this.#apiSection('图片规划模型连接', 'image.api', image.api)}
+            ${this.#regexSection('正文提取正则', 'image.inputRegex', image.inputRegex, '先从 AI 回复中提取/清洗需要规划插图的正文，再交给图片规划模型。')}
+            ${this.#promptSection('图片规划提示词条目栈', 'image.promptEntries', image.promptEntries)}
+            ${this.#regexSection('图片规划输出正则', 'image.outputRegex', image.outputRegex, '模型返回后先处理，再解析 JSON。')}
+            <section class="ttbm-section">
+                <h3>BizyAir API</h3>
+                <div class="ttbm-grid">
+                    ${numberField('Web App ID', 'image.bizyair.webAppId', image.bizyair.webAppId, 1, 1000000)}
+                    ${numberField('宽度', 'image.bizyair.width', image.bizyair.width, 64, 4096)}
+                    ${numberField('高度', 'image.bizyair.height', image.bizyair.height, 64, 4096)}
+                    ${numberField('Steps', 'image.bizyair.steps', image.bizyair.steps, 1, 200)}
+                    ${numberField('Seed', 'image.bizyair.seed', image.bizyair.seed, 1, 2147483647)}
+                    <label class="ttbm-check"><input type="checkbox" data-setting="image.bizyair.randomSeed" ${image.bizyair.randomSeed ? 'checked' : ''}>随机 seed</label>
+                    <label class="ttbm-check"><input type="checkbox" data-setting="image.bizyair.suppressPreviewOutput" ${image.bizyair.suppressPreviewOutput !== false ? 'checked' : ''}>suppress preview output</label>
+                    ${numberField('轮询间隔 ms', 'image.bizyair.pollIntervalMs', image.bizyair.pollIntervalMs, 500, 30000)}
+                    ${numberField('最大轮询次数', 'image.bizyair.maxPolls', image.bizyair.maxPolls, 1, 300)}
+                    <label>CFG<input class="text_pole" type="number" step="0.1" data-setting="image.bizyair.cfg" value="${escapeHtml(image.bizyair.cfg)}"></label>
+                    <label>Denoise<input class="text_pole" type="number" step="0.01" data-setting="image.bizyair.denoise" value="${escapeHtml(image.bizyair.denoise)}"></label>
+                    <label>Sampler<input class="text_pole" data-setting="image.bizyair.sampler" value="${escapeHtml(image.bizyair.sampler)}"></label>
+                    <label>Scheduler<input class="text_pole" data-setting="image.bizyair.scheduler" value="${escapeHtml(image.bizyair.scheduler)}"></label>
+                </div>
+                <label>BizyAir API Key（可用逗号或换行填多个，当前版本使用第一个）<textarea class="text_pole ttbm-code" rows="3" data-setting="image.bizyair.apiKeys">${escapeHtml(image.bizyair.apiKeys)}</textarea></label>
+                <label>负面提示词<textarea class="text_pole ttbm-code" rows="4" data-setting="image.bizyair.negativePrompt">${escapeHtml(image.bizyair.negativePrompt)}</textarea></label>
+                <label>input_values JSON 模板<textarea class="text_pole ttbm-code" rows="16" data-setting="image.bizyair.inputValuesTemplate">${escapeHtml(image.bizyair.inputValuesTemplate)}</textarea></label>
+                <p class="ttbm-hint">模板会 POST 到 BizyAir <code>/webapp/task/openapi/create</code> 的 <code>input_values</code>。可用宏：{{prompt}}、{{positive_prompt}}、{{negative_prompt}}、{{seed}}、{{width}}、{{height}}、{{steps}}、{{cfg}}、{{sampler}}、{{scheduler}}、{{denoise}}。字符串宏会自动做 JSON 字符串内容转义，所以请保留模板里的双引号。</p>
             </section>
         `;
     }
@@ -425,7 +472,7 @@ export class SettingsUi {
         return `
             <section class="ttbm-section">
                 <div class="ttbm-section-head"><h3>${title}</h3><button class="menu_button" type="button" data-add-entry="${path}">新增条目</button></div>
-                <p class="ttbm-hint">按从上到下的顺序发送。可用宏：{{chat}}、{{floor_start}}、{{floor_end}}、{{total_floors}}、{{eligible_floor}}、{{previous_large}}、{{small_summaries}}、{{memory}}、{{previous_status}}、{{last_user}}、{{last_assistant}}</p>
+                <p class="ttbm-hint">按从上到下的顺序发送。常用宏：{{chat}}、{{body}}、{{assistant}}、{{floor}}、{{floor_start}}、{{floor_end}}、{{total_floors}}、{{eligible_floor}}、{{previous_large}}、{{small_summaries}}、{{memory}}、{{previous_status}}、{{last_user}}、{{last_assistant}}、{{max_images}}</p>
                 <div class="ttbm-list">${promptEntriesHtml(entries, path)}</div>
             </section>
         `;
@@ -469,7 +516,7 @@ export class SettingsUi {
     }
 
     updateStats(stats) {
-        this.stats = stats;
+        this.stats = { ...(this.stats || {}), ...stats };
         if (this.modalTab === 'runtime' && !document.getElementById('ttbm-modal').hidden) this.renderModal();
     }
 

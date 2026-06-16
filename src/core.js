@@ -172,6 +172,61 @@ export function processStatusOutput(rawOutput, renderRules = [], injectionRules 
     };
 }
 
+function extractJsonLike(text) {
+    const source = String(text ?? '').trim();
+    const fenced = source.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenced) return fenced[1].trim();
+
+    const arrayStart = source.indexOf('[');
+    const objectStart = source.indexOf('{');
+    const start = [arrayStart, objectStart].filter(index => index >= 0).sort((a, b) => a - b)[0];
+    if (start === undefined) return source;
+    const open = source[start];
+    const close = open === '[' ? ']' : '}';
+    const end = source.lastIndexOf(close);
+    return end >= start ? source.slice(start, end + 1) : source.slice(start);
+}
+
+export function parseImagePlan(rawOutput, { maxItems = 3 } = {}) {
+    const text = extractJsonLike(rawOutput);
+    let parsed;
+    try {
+        parsed = JSON.parse(text);
+    } catch (error) {
+        throw new Error(`图片规划输出不是有效 JSON：${error.message}`);
+    }
+
+    const items = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.images)
+            ? parsed.images
+            : Array.isArray(parsed?.slots)
+                ? parsed.slots
+                : [];
+    if (!items.length) return [];
+
+    const allowedPlacements = new Set(['before', 'after', 'replace']);
+    return items
+        .map((item, index) => {
+            const prompt = String(item.prompt ?? item.description ?? item.imagePrompt ?? '').trim();
+            const anchor = String(item.anchor ?? item.locator ?? item.text ?? item.marker ?? '').trim();
+            const placement = allowedPlacements.has(String(item.placement || '').toLowerCase())
+                ? String(item.placement).toLowerCase()
+                : 'after';
+            const occurrence = Math.max(1, Math.floor(Number(item.occurrence) || 1));
+            return {
+                id: String(item.id || `image-${index + 1}`),
+                anchor,
+                prompt,
+                placement,
+                occurrence,
+                reason: String(item.reason || '').trim()
+            };
+        })
+        .filter(item => item.prompt && item.anchor)
+        .slice(0, Math.max(1, Math.min(6, Math.floor(Number(maxItems) || 3))));
+}
+
 export function renderTemplate(template, values) {
     return String(template ?? '').replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, key) => String(values?.[key] ?? ''));
 }

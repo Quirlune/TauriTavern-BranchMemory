@@ -1,6 +1,7 @@
 import {
     CHAT_RUNTIME_KEY,
     EXTENSION_NAMESPACE,
+    IMAGE_TABLE,
     LARGE_TABLE,
     SETTINGS_KEY,
     SETTINGS_TABLE,
@@ -103,6 +104,18 @@ export class StorageGateway {
         return this.setRecord(STATUS_TABLE, key, value);
     }
 
+    async getImage(key) {
+        return this.tryGetRecord(IMAGE_TABLE, key);
+    }
+
+    async setImage(key, value) {
+        return this.setRecord(IMAGE_TABLE, key, value);
+    }
+
+    async listImageKeys() {
+        return this.globalStore.listKeys({ namespace: EXTENSION_NAMESPACE, table: IMAGE_TABLE });
+    }
+
     async getChatRuntime(handle = this.currentHandle()) {
         try {
             return await handle.store.getJson({ namespace: EXTENSION_NAMESPACE, key: CHAT_RUNTIME_KEY });
@@ -116,7 +129,7 @@ export class StorageGateway {
     }
 
     async cleanAll() {
-        for (const table of [SETTINGS_TABLE, SMALL_TABLE, LARGE_TABLE, STATUS_TABLE]) {
+        for (const table of [SETTINGS_TABLE, SMALL_TABLE, LARGE_TABLE, STATUS_TABLE, IMAGE_TABLE]) {
             try {
                 await this.globalStore.deleteTable({ namespace: EXTENSION_NAMESPACE, table });
             } catch (error) {

@@ -10,6 +10,7 @@ import { ConnectionManagerRequestService } from '/scripts/extensions/shared.js';
 import { AssistantGenerationGate, clampInteger, deepMerge } from './core.js';
 import { DEFAULT_SETTINGS } from './defaults.js';
 import { BranchMemoryEngine } from './engine.js';
+import { ImagePipeline } from './images.js';
 import { RequestMonitor } from './monitor.js';
 import { StorageGateway, waitForTauriHost } from './storage.js';
 import { SettingsUi } from './ui.js';
@@ -20,6 +21,7 @@ const INJECTION_KEYS = {
 };
 let activeStorage = null;
 let activeMonitor = null;
+let activeImagePipeline = null;
 
 function normalizeSettings(settings) {
     settings.memory.smallEvery = clampInteger(settings.memory.smallEvery, 1, 100000, 8);
@@ -32,6 +34,16 @@ function normalizeSettings(settings) {
     settings.status.responseLength = clampInteger(settings.status.responseLength, 32, 32000, 350);
     settings.status.renderDepth = clampInteger(settings.status.renderDepth, 0, 100000, 0);
     settings.status.injection.depth = clampInteger(settings.status.injection.depth, 0, 100, 4);
+    settings.image.contextFloors = clampInteger(settings.image.contextFloors, 1, 1000, 2);
+    settings.image.responseLength = clampInteger(settings.image.responseLength, 32, 32000, 900);
+    settings.image.maxImagesPerMessage = clampInteger(settings.image.maxImagesPerMessage, 1, 3, 3);
+    settings.image.bizyair.webAppId = clampInteger(settings.image.bizyair.webAppId, 1, 1000000, 48570);
+    settings.image.bizyair.width = clampInteger(settings.image.bizyair.width, 64, 4096, 1024);
+    settings.image.bizyair.height = clampInteger(settings.image.bizyair.height, 64, 4096, 1024);
+    settings.image.bizyair.steps = clampInteger(settings.image.bizyair.steps, 1, 200, 10);
+    settings.image.bizyair.seed = clampInteger(settings.image.bizyair.seed, 1, 2147483647, 101);
+    settings.image.bizyair.pollIntervalMs = clampInteger(settings.image.bizyair.pollIntervalMs, 500, 30000, 2000);
+    settings.image.bizyair.maxPolls = clampInteger(settings.image.bizyair.maxPolls, 1, 300, 60);
     return settings;
 }
 
@@ -58,6 +70,7 @@ function applyInjection(channel, text, config) {
 
 export async function bootstrapExtension() {
     activeMonitor?.stop();
+    activeImagePipeline?.cancel();
     const host = await waitForTauriHost();
     const storage = new StorageGateway(host);
     activeStorage = storage;
@@ -70,6 +83,7 @@ export async function bootstrapExtension() {
     let pendingRefresh = { generateMemory: false, generateStatus: false, reason: 'scheduled' };
     let queue = Promise.resolve();
     let engine;
+    let imagePipeline;
     let ui;
     const generationGate = new AssistantGenerationGate();
     let generationResetTimer = null;
@@ -85,6 +99,11 @@ export async function bootstrapExtension() {
             .then(() => engine.refresh(options))
             .catch((error) => ui.showError(error));
         return queue;
+    };
+
+    const enqueueImages = (options) => {
+        if (!imagePipeline) return Promise.resolve();
+        return imagePipeline.enqueue(options);
     };
 
     const schedule = (options, delay = 500) => {
@@ -126,13 +145,18 @@ export async function bootstrapExtension() {
                 const shouldApply = pendingSettingsApply;
                 pendingSettingsApply = false;
                 void storage.saveSettings(settings)
-                    .then(() => shouldApply
-                        ? enqueue({ generateMemory: false, generateStatus: false, reason: 'settings_changed' })
-                        : undefined)
+                    .then(() => {
+                        if (!shouldApply) return undefined;
+                        void enqueueImages({ generate: false, reason: 'settings_changed' });
+                        return enqueue({ generateMemory: false, generateStatus: false, reason: 'settings_changed' });
+                    })
                     .catch(error => ui.showError(error));
             }, 800);
         },
-        onRunNow: () => enqueue({ generateMemory: true, generateStatus: true, reason: 'manual' })
+        onRunNow: () => {
+            void enqueueImages({ generate: true, reason: 'manual' });
+            return enqueue({ generateMemory: true, generateStatus: true, reason: 'manual' });
+        }
     });
 
     engine = new BranchMemoryEngine({
@@ -164,12 +188,47 @@ export async function bootstrapExtension() {
         updateStats: stats => ui.updateStats(stats)
     });
 
+    imagePipeline = new ImagePipeline({
+        storage,
+        getSettings: () => settings,
+        generate: async ({ prompt, responseLength, apiConfig }) => {
+            if (apiConfig?.mode === 'connection_profile') {
+                const profileId = String(apiConfig.connectionProfileId || '').trim();
+                if (!profileId) {
+                    throw new Error('图片规划已选择独立 API，但尚未选择 Connection Manager 配置。');
+                }
+                const response = await ConnectionManagerRequestService.sendRequest(
+                    profileId,
+                    prompt,
+                    responseLength,
+                    {
+                        stream: false,
+                        extractData: true,
+                        includePreset: apiConfig.includePreset !== false,
+                        includeInstruct: false
+                    }
+                );
+                return response?.content || '';
+            }
+            return generateRaw({ prompt, responseLength, trimNames: false });
+        },
+        onError: error => ui.showError(error),
+        updateStats: stats => ui.updateStats(stats)
+    });
+    activeImagePipeline = imagePipeline;
+
     ui.mount();
     await storage.saveSettings(settings);
 
     eventSource.on(event_types.CHAT_CHANGED, () => {
         schedule({ generateMemory: false, generateStatus: false, reason: 'chat_changed' }, 250);
+        void enqueueImages({ generate: false, reason: 'chat_changed' });
     });
+    if (event_types.MORE_MESSAGES_LOADED) {
+        eventSource.on(event_types.MORE_MESSAGES_LOADED, () => {
+            void enqueueImages({ generate: false, reason: 'more_messages_loaded' });
+        });
+    }
     eventSource.on(event_types.GENERATION_AFTER_COMMANDS, (type, _options, dryRun) => {
         if (generationGate.afterCommands(type, dryRun)) clearTimeout(generationResetTimer);
     });
@@ -183,24 +242,29 @@ export async function bootstrapExtension() {
             return;
         }
         schedule({ generateMemory: true, generateStatus: true, reason: 'assistant_output' }, 650);
+        setTimeout(() => void enqueueImages({ generate: true, reason: 'assistant_output' }), 850);
         generationResetTimer = setTimeout(() => {
             generationGate.reset();
         }, 1200);
     });
     eventSource.on(event_types.USER_MESSAGE_RENDERED, () => {
         ui.ensureStatusPosition();
+        void enqueueImages({ generate: false, reason: 'user_message_rendered' });
     });
     eventSource.on(event_types.MESSAGE_SWIPED, () => {
         ui.ensureStatusPosition();
         schedule({ generateMemory: true, generateStatus: false, reason: 'message_swiped' }, 500);
+        void enqueueImages({ generate: false, reason: 'message_swiped' });
     });
     eventSource.on(event_types.MESSAGE_EDITED, () => {
         ui.ensureStatusPosition();
         schedule({ generateMemory: true, generateStatus: false, reason: 'message_edited' }, 500);
+        void enqueueImages({ generate: false, reason: 'message_edited' });
     });
     eventSource.on(event_types.MESSAGE_DELETED, () => {
         ui.ensureStatusPosition();
         schedule({ generateMemory: false, generateStatus: false, reason: 'message_deleted' }, 500);
+        void enqueueImages({ generate: false, reason: 'message_deleted' });
     });
     eventSource.on(event_types.GENERATION_STARTED, async (type, _options, dryRun) => {
         if (!generationGate.start(type, dryRun)) {
@@ -211,15 +275,19 @@ export async function bootstrapExtension() {
     eventSource.on(event_types.GENERATION_STOPPED, () => {
         generationGate.reset();
         clearTimeout(generationResetTimer);
+        imagePipeline?.cancel();
     });
 
     schedule({ generateMemory: false, generateStatus: false, reason: 'startup' }, 100);
+    void enqueueImages({ generate: false, reason: 'startup' });
     console.info('[BranchMemory] Extension initialized');
 }
 
 export async function cleanExtensionData() {
     activeMonitor?.stop();
     activeMonitor = null;
+    activeImagePipeline?.cancel();
+    activeImagePipeline = null;
     const host = await waitForTauriHost();
     const storage = activeStorage || new StorageGateway(host);
     await storage.cleanAll();
@@ -228,4 +296,5 @@ export async function cleanExtensionData() {
     }
     document.getElementById('ttbm-status-host')?.remove();
     document.getElementById('ttbm-custom-status-style')?.remove();
+    document.querySelectorAll('[data-ttbm-image-slot]').forEach(node => node.remove());
 }

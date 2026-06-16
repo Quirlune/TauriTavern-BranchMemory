@@ -5,6 +5,7 @@ import {
     applyRegexRules,
     boundaries,
     buildSnapshot,
+    parseImagePlan,
     processStatusOutput,
     promptEntriesToMessages,
     selectActiveMemory,
@@ -108,4 +109,20 @@ test('request monitor redacts credentials without hiding generation parameters',
     assert.equal(sanitized.nested.prompt, 'hello');
     assert.equal(sanitized.nested.secret_id, 'profile-secret-3');
     assert.equal(sanitized.nested.auth_mode, 'oauth');
+});
+
+test('image planning output parses anchored insertion slots', () => {
+    const plan = parseImagePlan('```json\n{"images":[{"anchor":"她抬头看向雨夜","placement":"after","occurrence":1,"prompt":"girl looking at rainy night, cinematic"}]}\n```', { maxItems: 3 });
+    assert.deepEqual(plan, [{
+        id: 'image-1',
+        anchor: '她抬头看向雨夜',
+        prompt: 'girl looking at rainy night, cinematic',
+        placement: 'after',
+        occurrence: 1,
+        reason: ''
+    }]);
+});
+
+test('image planning output reports invalid json clearly', () => {
+    assert.throws(() => parseImagePlan('not json'), /图片规划输出不是有效 JSON/);
 });

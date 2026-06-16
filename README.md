@@ -1,4 +1,4 @@
-# Branch Memory & Status
+# Branch Memory, Status & Images
 
 面向 TauriTavern 的第三方前端扩展。它提供：
 
@@ -9,10 +9,12 @@
 - 用累计消息链指纹识别共同前缀，在聊天分支之间复用分叉点以前的摘要。
 - 状态栏只在 AI 回复完整落入聊天后进行另一笔独立模型调用，并可按深度插入聊天历史。
 - 状态模型原始输出可通过独立正则与模板注入下一轮正文生成，不依赖界面渲染结果。
+- 图片模块可在 AI 回复完成后独立规划插图位置，调用 BizyAir 生成图片并插回正文对应位置。
+- 图片缓存按聊天、楼层、分支链和提示词配方绑定，历史楼层重新加载后也会回渲染已有图片。
 - 全局调用监控可观察正文及其它插件的生成事件、最终提示词、采样参数和底层网络请求。
-- 记忆模块和状态栏模块分别拥有输入正则、输出正则和可排序提示词条目栈。
+- 记忆、状态栏和图片模块分别拥有输入正则、输出正则和可排序提示词条目栈。
 - 状态栏支持自定义 HTML 模板与 CSS。
-- 记忆模块和状态栏模块可以分别选择 Connection Manager 中的独立 Chat Completion 配置。
+- 记忆、状态栏和图片规划模块可以分别选择 Connection Manager 中的独立 Chat Completion 配置。
 
 ## 安装
 
@@ -28,7 +30,7 @@ data/default-user/extensions/TauriTavern-BranchMemory
 data/extensions/third-party/TauriTavern-BranchMemory
 ```
 
-重启 TauriTavern，在扩展设置中打开 `Branch Memory & Status`。
+重启 TauriTavern，在扩展设置中打开 `Branch Memory, Status & Images`。
 
 本扩展依赖：
 
@@ -39,12 +41,14 @@ data/extensions/third-party/TauriTavern-BranchMemory
 
 ## 独立模型连接
 
-记忆与状态栏各自提供两种调用来源：
+记忆、状态栏和图片规划各自提供两种调用来源：
 
 1. 沿用当前聊天 API。
 2. 选择 Connection Manager 中保存的 Chat Completion Profile。
 
-独立模式只保存 Profile ID，API Key 仍由酒馆的密钥系统管理。记忆和状态栏可以选择不同的 Profile，也不会切换当前聊天正在使用的模型连接。
+独立模式只保存 Profile ID，API Key 仍由酒馆的密钥系统管理。记忆、状态栏和图片规划可以选择不同的 Profile，也不会切换当前聊天正在使用的模型连接。
+
+BizyAir 生图调用使用图片模块里的独立 BizyAir API Key 字段，不走 Connection Manager。当前版本支持填写多个 Key，但实际调用使用第一个。
 
 ## 分支规则
 
@@ -96,6 +100,21 @@ data/extensions/third-party/TauriTavern-BranchMemory
 {{status}}
 ```
 
+图片规划提示词支持：
+
+```text
+{{body}}
+{{assistant}}
+{{chat}}
+{{floor}}
+{{floor_start}}
+{{floor_end}}
+{{total_floors}}
+{{last_user}}
+{{last_assistant}}
+{{max_images}}
+```
+
 状态栏正文注入模板同样支持 `{{status}}`，但它使用单独的“正文注入输出正则”。状态模型的原始输出会分别进入两条管线：
 
 ```text
@@ -114,6 +133,61 @@ data/extensions/third-party/TauriTavern-BranchMemory
 ```
 
 正则使用 JavaScript `RegExp` 语法，规则按界面中的顺序执行。
+
+## BizyAir 图片插入
+
+图片模块是一条与记忆、状态栏并行的通路。它只在 AI 回复完成并落入聊天消息后触发；用户消息、编辑、swipe、普通聊天加载只会尝试回渲染已有缓存，不会重新请求 BizyAir。
+
+默认流程：
+
+```text
+AI 回复正文
+  -> 正文提取正则
+  -> 图片规划提示词条目栈
+  -> 图片规划模型输出 JSON
+  -> 图片规划输出正则
+  -> BizyAir create/query
+  -> 缓存图片
+  -> 按 anchor 插入到对应消息正文
+```
+
+图片规划模型需要输出 JSON 数组，或输出 `{ "images": [...] }` / `{ "slots": [...] }`。每项至少包含：
+
+```json
+{
+  "anchor": "正文里用于定位的连续原文短句",
+  "placement": "after",
+  "occurrence": 1,
+  "prompt": "image prompt for BizyAir"
+}
+```
+
+`anchor` 必须逐字来自正文。插件会在消息渲染后的文本节点里查找它，并按 `placement` 插入图片：`before` 插到锚点前，`after` 插到锚点后，`replace` 替换锚点文本。`occurrence` 用于处理同一句在正文中重复出现的情况。找不到锚点时，图片会回退追加到该消息末尾，避免生成结果丢失。
+
+BizyAir API 参考了 [bizyair-tavern-plugin](https://github.com/dhdbv-cbs/bizyair-tavern-plugin) 的 OpenAPI 调用方式：
+
+- `POST https://api.bizyair.cn/w/v1/webapp/task/openapi/create`
+- `GET https://api.bizyair.cn/w/v1/webapp/task/openapi/query?task_id=...`
+
+默认 Web App ID 为 `48570`，并预置了 zimage 模板常用的 `input_values` 字段。`input_values JSON 模板` 支持这些宏：
+
+```text
+{{prompt}}
+{{positive_prompt}}
+{{negative_prompt}}
+{{seed}}
+{{width}}
+{{height}}
+{{steps}}
+{{cfg}}
+{{sampler}}
+{{scheduler}}
+{{denoise}}
+```
+
+字符串宏会自动做 JSON 字符串内容转义，所以模板里应保留双引号，例如 `"6:CLIPTextEncode.text": "{{positive_prompt}}"`。
+
+图片缓存存储在全局 Extension Store 的 `image-v1` 表中，缓存键包含当前聊天 scope、用户楼层号、该楼层的累计消息链指纹和图片配方 hash。因此在第 100 楼进入第 70 楼分支时，分叉点以前楼层的图片仍然能复用；分叉后链指纹变化的楼层会按新分支重新生成。修改图片提示词、正则、规划模型或 BizyAir 模板会形成新配方，旧配方图片仍保留在缓存表中，但不会作为当前配方结果回渲染。开启“把图片缓存为 data URL”时，插件会尽量把 BizyAir 返回的图片下载为 data URL；如果跨域或网络阻止下载，会保留远程 URL 作为回退。
 
 ## 状态栏渲染位置
 
