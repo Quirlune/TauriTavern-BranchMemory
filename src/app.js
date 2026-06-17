@@ -96,6 +96,9 @@ export async function bootstrapExtension() {
     let ui;
     const generationGate = new AssistantGenerationGate();
     let generationResetTimer = null;
+    const imageGenerationTimers = new Set();
+    let imageGenerationCancelVersion = 0;
+    let generationRendered = false;
     const monitor = new RequestMonitor({
         eventSource,
         eventTypes: event_types,
@@ -113,6 +116,27 @@ export async function bootstrapExtension() {
     const enqueueImages = (options) => {
         if (!imagePipeline) return Promise.resolve();
         return imagePipeline.enqueue(options);
+    };
+
+    const cancelPendingImageGeneration = () => {
+        imageGenerationCancelVersion += 1;
+        for (const timer of imageGenerationTimers) clearTimeout(timer);
+        imageGenerationTimers.clear();
+    };
+
+    const scheduleImageGeneration = ({ reason, delay = 900, waitForEngine = true } = {}) => {
+        const cancelVersion = imageGenerationCancelVersion;
+        const timer = setTimeout(() => {
+            imageGenerationTimers.delete(timer);
+            const ready = waitForEngine ? queue : Promise.resolve();
+            void ready
+                .then(() => {
+                    if (cancelVersion !== imageGenerationCancelVersion) return undefined;
+                    return enqueueImages({ generate: true, reason });
+                })
+                .catch(error => ui.showError(error));
+        }, delay);
+        imageGenerationTimers.add(timer);
     };
 
     const schedule = (options, delay = 500) => {
@@ -231,6 +255,8 @@ export async function bootstrapExtension() {
     await storage.saveSettings(settings);
 
     eventSource.on(event_types.CHAT_CHANGED, () => {
+        cancelPendingImageGeneration();
+        imagePipeline?.cancel();
         schedule({ generateMemory: false, generateStatus: false, reason: 'chat_changed' }, 250);
         void enqueueImages({ generate: false, reason: 'chat_changed' });
     });
@@ -251,8 +277,9 @@ export async function bootstrapExtension() {
         if (!generationGate.shouldTrigger(type)) {
             return;
         }
+        generationRendered = true;
         schedule({ generateMemory: true, generateStatus: true, reason: 'assistant_output' }, 650);
-        setTimeout(() => void queue.then(() => enqueueImages({ generate: true, reason: 'assistant_output' })), 850);
+        scheduleImageGeneration({ reason: 'assistant_output', delay: 900, waitForEngine: true });
         generationResetTimer = setTimeout(() => {
             generationGate.reset();
         }, 1200);
@@ -263,11 +290,12 @@ export async function bootstrapExtension() {
     });
     eventSource.on(event_types.MESSAGE_SWIPED, () => {
         ui.ensureStatusPosition();
+        cancelPendingImageGeneration();
         imagePipeline?.cancel();
         generationGate.reset();
         clearTimeout(generationResetTimer);
         schedule({ generateMemory: true, generateStatus: true, reason: 'message_swiped' }, 500);
-        setTimeout(() => void queue.then(() => enqueueImages({ generate: true, reason: 'message_swiped' })), 700);
+        scheduleImageGeneration({ reason: 'message_swiped', delay: 1100, waitForEngine: true });
     });
     eventSource.on(event_types.MESSAGE_EDITED, () => {
         ui.ensureStatusPosition();
@@ -283,12 +311,15 @@ export async function bootstrapExtension() {
         if (!generationGate.start(type, dryRun)) {
             return;
         }
+        generationRendered = false;
         await enqueue({ generateMemory: false, generateStatus: false, reason: 'before_generation' });
     });
     eventSource.on(event_types.GENERATION_STOPPED, () => {
+        if (!generationRendered) {
+            cancelPendingImageGeneration();
+        }
         generationGate.reset();
         clearTimeout(generationResetTimer);
-        imagePipeline?.cancel();
     });
 
     schedule({ generateMemory: false, generateStatus: false, reason: 'startup' }, 100);

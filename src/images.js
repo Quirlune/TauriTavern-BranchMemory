@@ -490,36 +490,122 @@ export class ImagePipeline {
         this.onError = onError;
         this.updateStats = updateStats;
         this.client = new BizyAirClient(getSettings);
-        this.queue = Promise.resolve();
-        this.abortController = null;
+        this.activeJobs = new Map();
+        this.renderQueue = Promise.resolve();
+        this.renderVersion = 0;
+        this.cancelVersion = 0;
     }
 
     enqueue(options = {}) {
-        this.queue = this.queue
-            .then(() => this.refresh(options))
+        return this.refresh(options)
             .catch((error) => {
                 if (!error?.branchMemoryCancelled) this.onError(error);
             });
-        return this.queue;
     }
 
     cancel() {
-        notifyImageDebug(this.getSettings(), '收到取消图片生成请求，正在中断并发任务', 'warning');
-        const error = new Error('图片生成已取消。');
-        error.branchMemoryCancelled = true;
-        this.abortController?.abort(error);
-        this.abortController = null;
+        this.cancelVersion += 1;
+        const error = this.#cancelledError();
+        notifyImageDebug(this.getSettings(), `收到取消图片生成请求，正在中断 ${this.activeJobs.size} 个任务`, 'warning');
+        for (const job of this.activeJobs.values()) {
+            job.controller.abort(error);
+        }
+        this.activeJobs.clear();
     }
 
     async refresh({ generate = false, reason = 'refresh' } = {}) {
+        if (generate) return this.#generateLatest({ reason });
+        return this.#renderCurrentCached({ reason });
+    }
+
+    async #renderCurrentCached({ reason = 'refresh' } = {}) {
+        const renderId = this.renderVersion + 1;
+        this.renderVersion = renderId;
+        this.renderQueue = this.renderQueue
+            .catch(() => undefined)
+            .then(async () => {
+                const settings = this.getSettings();
+                notifyImageDebug(settings, `回渲染图片缓存：reason=${reason}`);
+                if (!settings.enabled || !settings.image?.enabled) {
+                    if (renderId === this.renderVersion) {
+                        notifyImageDebug(settings, '扩展或图片模块未启用，移除现有图片占位', 'warning');
+                        document.querySelectorAll('[data-ttbm-image-slot]').forEach(node => node.remove());
+                    }
+                    return;
+                }
+
+                const context = await this.#buildContext();
+                if (renderId !== this.renderVersion) {
+                    notifyImageDebug(settings, '已有更新的缓存回渲染任务，丢弃本次旧结果', 'warning');
+                    return;
+                }
+
+                document.querySelectorAll('[data-ttbm-image-slot]').forEach(node => node.remove());
+                notifyImageDebug(settings, '开始回渲染已有图片缓存');
+                const renderedCacheCount = await this.#renderCached(context);
+                notifyImageDebug(settings, `缓存回渲染完成：${renderedCacheCount} 条记录`);
+            });
+        return this.renderQueue;
+    }
+
+    async #generateLatest({ reason = 'refresh' } = {}) {
         const settings = this.getSettings();
-        notifyImageDebug(settings, `刷新图片管线：reason=${reason}，generate=${generate ? 'true' : 'false'}`);
+        const requestVersion = this.cancelVersion;
+        notifyImageDebug(settings, `准备图片生成：reason=${reason}`);
         if (!settings.enabled || !settings.image?.enabled) {
-            notifyImageDebug(settings, '扩展或图片模块未启用，移除现有图片占位', 'warning');
-            document.querySelectorAll('[data-ttbm-image-slot]').forEach(node => node.remove());
+            notifyImageDebug(settings, '扩展或图片模块未启用，跳过图片生成', 'warning');
             return;
         }
 
+        const target = await this.#captureStableTarget({ reason, requestVersion });
+        this.#throwIfCancelled(requestVersion);
+        if (!target) {
+            notifyImageDebug(settings, '没有找到稳定的 AI 回复，跳过图片生成', 'warning');
+            return;
+        }
+
+        const existing = await this.#getCachedImageForTarget(target);
+        if (existing) {
+            notifyImageDebug(settings, `命中图片缓存：第 ${target.row.floor} 楼，${existing.items?.length || 0} 张`, 'success');
+            renderImageRecord(existing);
+            return;
+        }
+        if (!settings.image.autoGenerate && reason !== 'manual') {
+            notifyImageDebug(settings, '自动生成关闭，未命中缓存，跳过新图片生成');
+            return;
+        }
+
+        const running = this.activeJobs.get(target.key);
+        if (running) {
+            notifyImageDebug(settings, `第 ${target.row.floor} 楼图片任务已在运行，复用当前任务`);
+            return running.promise;
+        }
+
+        const controller = new AbortController();
+        const promise = this.#generateTarget({ target, controller, reason, requestVersion })
+            .finally(() => {
+                if (this.activeJobs.get(target.key)?.promise === promise) {
+                    this.activeJobs.delete(target.key);
+                }
+            });
+        this.activeJobs.set(target.key, { controller, promise });
+        return promise;
+    }
+
+    #cancelledError() {
+        const error = new Error('图片生成已取消。');
+        error.branchMemoryCancelled = true;
+        return error;
+    }
+
+    #throwIfCancelled(requestVersion) {
+        if (requestVersion !== this.cancelVersion) {
+            throw this.#cancelledError();
+        }
+    }
+
+    async #buildContext() {
+        const settings = this.getSettings();
         const handle = this.storage.currentHandle();
         const ref = this.storage.currentRef();
         const identity = chatIdentity(ref);
@@ -531,16 +617,16 @@ export class ImagePipeline {
             ? { rawContent: null, renderContent: '', injectionContent: '' }
             : statusRecordOutputs(runtime.status, settings.status || {});
         const recipe = recipeHash({
-            version: 2,
+            version: 3,
             api: settings.image.api,
             promptEntries: settings.image.promptEntries,
             inputRegex: settings.image.inputRegex,
             positionTag: settings.image.positionTag || 'position',
             promptTag: settings.image.promptTag || 'positive_prompt',
             status: {
-                rawContent: statusOutputs.rawContent || '',
-                renderContent: statusOutputs.renderContent,
-                injectionContent: statusOutputs.injectionContent
+                enabled: settings.status?.enabled !== false,
+                outputRegex: settings.status?.outputRegex || [],
+                injectionOutputRegex: settings.status?.injection?.outputRegex || []
             },
             character: {
                 key: character.key,
@@ -554,48 +640,132 @@ export class ImagePipeline {
                 negativePrompt: settings.image.bizyair.negativePrompt
             }
         });
-        document.querySelectorAll('[data-ttbm-image-slot]').forEach(node => node.remove());
-        notifyImageDebug(settings, '开始回渲染已有图片缓存');
-        const renderedCacheCount = await this.#renderCached({ snapshot, scopeHash, recipe });
-        notifyImageDebug(settings, `缓存回渲染完成：${renderedCacheCount} 条记录`);
+        return { settings, handle, ref, identity, scopeHash, snapshot, character, statusOutputs, recipe };
+    }
 
-        if (!generate) {
-            notifyImageDebug(settings, '本次只回渲染缓存，不触发图片生成');
-            return;
-        }
-        if (!settings.image.autoGenerate && reason !== 'manual') {
-            notifyImageDebug(settings, '自动生成关闭，跳过图片生成');
-            return;
-        }
+    #targetFromContext(context) {
+        const { settings, snapshot, scopeHash, recipe } = context;
         const row = latestAssistantRow(snapshot);
         if (!row) {
-            notifyImageDebug(settings, '没有找到可用于规划的最新 AI 回复', 'warning');
-            return;
+            return null;
         }
         const floorInfo = getFloor(snapshot, row.floor);
         if (!floorInfo) {
             notifyImageDebug(settings, `找不到第 ${row.floor} 楼分支信息，跳过`, 'warning');
-            return;
-        }
-        const key = makeCacheKey({ scopeHash, floor: row.floor, chain: floorInfo.chain, recipe });
-        const existing = await this.storage.getImage(key);
-        if (existing) {
-            notifyImageDebug(settings, `命中图片缓存：第 ${row.floor} 楼，${existing.items?.length || 0} 张`, 'success');
-            renderImageRecord(existing);
-            return;
+            return null;
         }
 
         const source = applyRegexRules(String(row.message?.mes || ''), settings.image.inputRegex).trim();
         if (!source) {
             notifyImageDebug(settings, '正文提取后为空，跳过图片规划', 'warning');
-            return;
+            return null;
         }
         const sourceHash = hashString(source);
         const segmentedSource = segmentImageSource(source);
         if (!segmentedSource.segments.length) {
             notifyImageDebug(settings, '正文分片为空，跳过图片规划', 'warning');
-            return;
+            return null;
         }
+        const key = makeCacheKey({ scopeHash, floor: row.floor, chain: floorInfo.chain, recipe });
+        return {
+            ...context,
+            row,
+            floorInfo,
+            key,
+            source,
+            sourceHash,
+            segmentedSource,
+            signature: `${context.identity}:${row.index}:${row.floor}:${floorInfo.chain}:${sourceHash}`
+        };
+    }
+
+    async #captureStableTarget({ reason, requestVersion }) {
+        const attempts = reason === 'message_swiped' ? 8 : 4;
+        let lastSignature = '';
+        let stableCount = 0;
+        let lastTarget = null;
+
+        for (let index = 0; index < attempts; index += 1) {
+            this.#throwIfCancelled(requestVersion);
+            const target = this.#targetFromContext(await this.#buildContext());
+            const signature = target?.signature || '';
+            if (signature && signature === lastSignature) {
+                stableCount += 1;
+            } else {
+                stableCount = signature ? 1 : 0;
+                lastSignature = signature;
+            }
+            if (target) lastTarget = target;
+            if (target && stableCount >= 2) {
+                notifyImageDebug(target.settings, `捕获到稳定图片目标：第 ${target.row.floor} 楼，${target.segmentedSource.segments.length} 个分片`);
+                return target;
+            }
+            await delay(reason === 'message_swiped' ? 300 : 220);
+        }
+
+        if (lastTarget) {
+            notifyImageDebug(lastTarget.settings, `使用最后一次可见图片目标：第 ${lastTarget.row.floor} 楼`, 'warning');
+        }
+        return lastTarget;
+    }
+
+    async #targetStillCurrent(target) {
+        if (chatIdentity(this.storage.currentRef()) !== target.identity) {
+            notifyImageDebug(target.settings, '聊天已切换，丢弃本批图片结果', 'warning');
+            return false;
+        }
+        const currentSnapshot = await readFullHistory(target.handle);
+        const currentFloorInfo = getFloor(currentSnapshot, target.row.floor);
+        const currentRow = currentSnapshot.rows[target.row.index];
+        const currentSource = applyRegexRules(String(currentRow?.message?.mes || ''), target.settings.image.inputRegex).trim();
+        if (!currentFloorInfo || currentFloorInfo.chain !== target.floorInfo.chain || hashString(currentSource) !== target.sourceHash) {
+            notifyImageDebug(target.settings, '当前消息已变化，丢弃旧图片任务结果', 'warning');
+            return false;
+        }
+        return true;
+    }
+
+    async #getCachedImageForTarget(target, availableKeys = null) {
+        const exact = await this.storage.getImage(target.key);
+        if (exact) return exact;
+        return this.#getLatestImageForFloorChain({
+            scopeHash: target.scopeHash,
+            floor: target.row.floor,
+            chain: target.floorInfo.chain,
+            availableKeys
+        });
+    }
+
+    async #getLatestImageForFloorChain({ scopeHash, floor, chain, availableKeys = null }) {
+        const keys = availableKeys || new Set(await this.storage.listImageKeys());
+        const prefix = `v1.${scopeHash}.${Math.max(0, Number(floor) || 0)}.${chain}.`;
+        const candidates = [...keys].filter(key => String(key).startsWith(prefix));
+        if (!candidates.length) return null;
+
+        const records = [];
+        for (const key of candidates) {
+            const record = await this.storage.getImage(key);
+            if (record) records.push(record);
+        }
+        records.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+        return records[0] || null;
+    }
+
+    async #generateTarget({ target, controller, reason, requestVersion }) {
+        const {
+            settings,
+            snapshot,
+            character,
+            statusOutputs,
+            row,
+            floorInfo,
+            key,
+            recipe,
+            scopeHash,
+            source,
+            sourceHash,
+            segmentedSource
+        } = target;
         notifyImageDebug(settings, `开始图片规划：第 ${row.floor} 楼，${segmentedSource.segments.length} 个分片`);
         const startFloor = Math.max(1, row.floor - settings.image.contextFloors + 1);
         const positionTag = settings.image.positionTag || 'position';
@@ -631,13 +801,8 @@ export class ImagePipeline {
 
         notifyImageDebug(settings, `调用图片规划模型：messages=${prompt.length}`);
         const rawPlan = await this.generate({ prompt, responseLength: settings.image.responseLength, apiConfig: settings.image.api });
-        if (chatIdentity(this.storage.currentRef()) !== identity) return;
-        const plannedSnapshot = await readFullHistory(handle);
-        const plannedFloorInfo = getFloor(plannedSnapshot, row.floor);
-        const plannedRow = plannedSnapshot.rows[row.index];
-        const plannedSource = applyRegexRules(String(plannedRow?.message?.mes || ''), settings.image.inputRegex).trim();
-        if (!plannedFloorInfo || plannedFloorInfo.chain !== floorInfo.chain || hashString(plannedSource) !== sourceHash) {
-            notifyImageDebug(settings, '图片规划返回时消息已变化，丢弃旧规划结果', 'warning');
+        this.#throwIfCancelled(requestVersion);
+        if (!await this.#targetStillCurrent(target)) {
             return;
         }
         notifyImageDebug(settings, `图片规划模型返回：${String(rawPlan || '').length} 字符`);
@@ -649,61 +814,47 @@ export class ImagePipeline {
             return;
         }
 
-        this.abortController = new AbortController();
-        const controller = this.abortController;
         const signal = controller.signal;
         let items = [];
-        try {
-            const concurrency = Math.min(plan.length, Math.max(1, Math.floor(Number(settings.image.bizyair.concurrency) || 3)));
-            notifyImageDebug(settings, `开始 BizyAir 批量生成：${plan.length} 张，并发=${concurrency}`);
-            items = await mapConcurrent(plan, concurrency, async (item, index) => {
-                const label = `图片 ${index + 1}/${plan.length}（分片 ${item.segmentIndex}）`;
-                const segment = segmentedSource.segments[item.segmentIndex - 1];
-                if (!segment) {
-                    notifyImageDebug(settings, `${label} 找不到对应分片，跳过`, 'warning');
-                    return null;
-                }
-                const slotId = hashString(`${key}:${item.id}:${item.segmentIndex}:${item.prompt}`);
-                try {
-                    notifyImageDebug(settings, `${label} 开始生成`);
-                    const remoteUrl = await this.client.generate(item.prompt, signal, { label });
-                    notifyImageDebug(settings, `${label} 获得远程图片 URL`, 'success');
-                    const imageUrl = await cacheImageUrl(remoteUrl, settings.image.cacheAsDataUrl !== false, signal, settings, label);
-                    notifyImageDebug(settings, `${label} 生成流程完成`, 'success');
-                    return {
-                        ...item,
-                        id: slotId,
-                        segmentText: segment.text,
-                        segmentOccurrence: segment.occurrence,
-                        contentWrapped: segmentedSource.contentWrapped,
-                        isLastSegment: item.segmentIndex === segmentedSource.segments.length,
-                        remoteUrl,
-                        imageUrl,
-                        createdAt: new Date().toISOString()
-                    };
-                } catch (error) {
-                    notifyImageDebug(settings, `${label} 失败：${error.message || error}`, 'error');
-                    controller.abort(error);
-                    throw error;
-                }
-            }, signal);
-        } finally {
-            if (this.abortController === controller) this.abortController = null;
-        }
+        const concurrency = Math.min(plan.length, Math.max(1, Math.floor(Number(settings.image.bizyair.concurrency) || 3)));
+        notifyImageDebug(settings, `开始 BizyAir 批量生成：${plan.length} 张，并发=${concurrency}`);
+        items = await mapConcurrent(plan, concurrency, async (item, index) => {
+            const label = `图片 ${index + 1}/${plan.length}（分片 ${item.segmentIndex}）`;
+            const segment = segmentedSource.segments[item.segmentIndex - 1];
+            if (!segment) {
+                notifyImageDebug(settings, `${label} 找不到对应分片，跳过`, 'warning');
+                return null;
+            }
+            const slotId = hashString(`${key}:${item.id}:${item.segmentIndex}:${item.prompt}`);
+            try {
+                notifyImageDebug(settings, `${label} 开始生成`);
+                const remoteUrl = await this.client.generate(item.prompt, signal, { label });
+                notifyImageDebug(settings, `${label} 获得远程图片 URL`, 'success');
+                const imageUrl = await cacheImageUrl(remoteUrl, settings.image.cacheAsDataUrl !== false, signal, settings, label);
+                notifyImageDebug(settings, `${label} 生成流程完成`, 'success');
+                return {
+                    ...item,
+                    id: slotId,
+                    segmentText: segment.text,
+                    segmentOccurrence: segment.occurrence,
+                    contentWrapped: segmentedSource.contentWrapped,
+                    isLastSegment: item.segmentIndex === segmentedSource.segments.length,
+                    remoteUrl,
+                    imageUrl,
+                    createdAt: new Date().toISOString()
+                };
+            } catch (error) {
+                notifyImageDebug(settings, `${label} 失败：${error.message || error}`, 'error');
+                controller.abort(error);
+                throw error;
+            }
+        }, signal);
         if (!items.length) {
             notifyImageDebug(settings, 'BizyAir 没有返回可保存图片，跳过写入缓存', 'warning');
             return;
         }
-        if (chatIdentity(this.storage.currentRef()) !== identity) {
-            notifyImageDebug(settings, '聊天已切换，丢弃本批图片结果', 'warning');
-            return;
-        }
-        const currentSnapshot = await readFullHistory(handle);
-        const currentFloorInfo = getFloor(currentSnapshot, row.floor);
-        const currentRow = currentSnapshot.rows[row.index];
-        const currentSource = applyRegexRules(String(currentRow?.message?.mes || ''), settings.image.inputRegex).trim();
-        if (!currentFloorInfo || currentFloorInfo.chain !== floorInfo.chain || hashString(currentSource) !== sourceHash) {
-            notifyImageDebug(settings, '当前消息已变化，丢弃旧图片任务结果', 'warning');
+        this.#throwIfCancelled(requestVersion);
+        if (!await this.#targetStillCurrent(target)) {
             return;
         }
 
@@ -734,8 +885,14 @@ export class ImagePipeline {
         const records = [];
         for (const floor of snapshot.floors) {
             const key = makeCacheKey({ scopeHash, floor: floor.number, chain: floor.chain, recipe });
-            if (!available.has(key)) continue;
-            const record = await this.storage.getImage(key);
+            const record = available.has(key)
+                ? await this.storage.getImage(key)
+                : await this.#getLatestImageForFloorChain({
+                    scopeHash,
+                    floor: floor.number,
+                    chain: floor.chain,
+                    availableKeys: available
+                });
             if (record) records.push(record);
         }
         records.sort((a, b) => a.messageIndex - b.messageIndex).forEach(renderImageRecord);
