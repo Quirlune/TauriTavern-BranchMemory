@@ -148,6 +148,13 @@ export async function bootstrapExtension() {
         scheduleImageGeneration({ reason: 'assistant_output', delay: 900, waitForEngine: true });
     };
 
+    const resetGenerationGateSoon = (delay = 1800) => {
+        clearTimeout(generationResetTimer);
+        generationResetTimer = setTimeout(() => {
+            generationGate.reset();
+        }, delay);
+    };
+
     const schedule = (options, delay = 500) => {
         pendingRefresh.generateMemory ||= Boolean(options.generateMemory);
         pendingRefresh.generateStatus ||= Boolean(options.generateStatus);
@@ -291,32 +298,27 @@ export async function bootstrapExtension() {
         if (generationEnded || !event_types.GENERATION_ENDED) {
             scheduleAssistantImageGenerationOnce();
         }
-        generationResetTimer = setTimeout(() => {
-            generationGate.reset();
-        }, 1200);
+        resetGenerationGateSoon();
     });
     eventSource.on(event_types.USER_MESSAGE_RENDERED, () => {
         ui.ensureStatusPosition();
-        void enqueueImages({ generate: false, reason: 'user_message_rendered' });
     });
     eventSource.on(event_types.MESSAGE_SWIPED, () => {
         ui.ensureStatusPosition();
         cancelPendingImageGeneration();
         imagePipeline?.cancel();
+        imagePipeline?.clearRendered();
         generationGate.reset();
         clearTimeout(generationResetTimer);
         schedule({ generateMemory: true, generateStatus: true, reason: 'message_swiped' }, 500);
-        void enqueueImages({ generate: false, reason: 'message_swiped' });
     });
     eventSource.on(event_types.MESSAGE_EDITED, () => {
         ui.ensureStatusPosition();
         schedule({ generateMemory: true, generateStatus: false, reason: 'message_edited' }, 500);
-        void enqueueImages({ generate: false, reason: 'message_edited' });
     });
     eventSource.on(event_types.MESSAGE_DELETED, () => {
         ui.ensureStatusPosition();
         schedule({ generateMemory: false, generateStatus: false, reason: 'message_deleted' }, 500);
-        void enqueueImages({ generate: false, reason: 'message_deleted' });
     });
     eventSource.on(event_types.GENERATION_STARTED, async (type, _options, dryRun) => {
         generationRendered = false;
@@ -332,9 +334,11 @@ export async function bootstrapExtension() {
             generationEnded = true;
             if (generationRendered) {
                 scheduleAssistantImageGenerationOnce();
+                generationGate.reset();
+                clearTimeout(generationResetTimer);
+                return;
             }
-            generationGate.reset();
-            clearTimeout(generationResetTimer);
+            resetGenerationGateSoon(3000);
         });
     }
     eventSource.on(event_types.GENERATION_STOPPED, () => {

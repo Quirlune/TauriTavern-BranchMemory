@@ -508,11 +508,17 @@ export class ImagePipeline {
     cancel() {
         this.cancelVersion += 1;
         const error = this.#cancelledError();
-        notifyImageDebug(this.getSettings(), `收到取消图片生成请求，正在中断 ${this.activeJobs.size} 个任务`, 'warning');
+        if (this.activeJobs.size) {
+            notifyImageDebug(this.getSettings(), `收到取消图片生成请求，正在中断 ${this.activeJobs.size} 个任务`, 'warning');
+        }
         for (const job of this.activeJobs.values()) {
             job.controller.abort(error);
         }
         this.activeJobs.clear();
+    }
+
+    clearRendered() {
+        document.querySelectorAll('[data-ttbm-image-slot]').forEach(node => node.remove());
     }
 
     async refresh({ generate = false, reason = 'refresh' } = {}) {
@@ -555,8 +561,8 @@ export class ImagePipeline {
         const requestVersion = this.cancelVersion;
         notifyImageDebug(settings, `准备图片生成：reason=${reason}`);
         if (!IMAGE_GENERATION_REASONS.has(reason)) {
-            notifyImageDebug(settings, `reason=${reason} 不是图片生成入口，仅回渲染缓存`);
-            return this.#renderCurrentCached({ reason });
+            notifyImageDebug(settings, `reason=${reason} 不是图片生成入口，跳过`);
+            return;
         }
         if (!settings.enabled || !settings.image?.enabled) {
             notifyImageDebug(settings, '扩展或图片模块未启用，跳过图片生成', 'warning');
