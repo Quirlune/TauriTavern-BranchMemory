@@ -12,7 +12,9 @@ import {
     statusRecordOutputs,
     transcriptForFloorRange
 } from './core.js';
-import { characterPromptInfo, chatIdentity, readFullHistory, scopeHashForRef } from './history.js';
+import { characterPromptInfo, chatIdentity, locateLatestAssistantMessage, readFullHistory, scopeHashForRef } from './history.js';
+
+const IMAGE_GENERATION_REASONS = new Set(['assistant_output', 'manual']);
 
 function latestAssistantRow(snapshot) {
     for (let index = snapshot.rows.length - 1; index >= 0; index -= 1) {
@@ -552,6 +554,10 @@ export class ImagePipeline {
         const settings = this.getSettings();
         const requestVersion = this.cancelVersion;
         notifyImageDebug(settings, `准备图片生成：reason=${reason}`);
+        if (!IMAGE_GENERATION_REASONS.has(reason)) {
+            notifyImageDebug(settings, `reason=${reason} 不是图片生成入口，仅回渲染缓存`);
+            return this.#renderCurrentCached({ reason });
+        }
         if (!settings.enabled || !settings.image?.enabled) {
             notifyImageDebug(settings, '扩展或图片模块未启用，跳过图片生成', 'warning');
             return;
@@ -680,33 +686,37 @@ export class ImagePipeline {
     }
 
     async #captureStableTarget({ reason, requestVersion }) {
-        const attempts = reason === 'message_swiped' ? 8 : 4;
-        let lastSignature = '';
-        let stableCount = 0;
-        let lastTarget = null;
+        this.#throwIfCancelled(requestVersion);
+        const target = this.#targetFromContext(await this.#buildContext());
+        if (!target) return null;
 
-        for (let index = 0; index < attempts; index += 1) {
-            this.#throwIfCancelled(requestVersion);
-            const target = this.#targetFromContext(await this.#buildContext());
-            const signature = target?.signature || '';
-            if (signature && signature === lastSignature) {
-                stableCount += 1;
-            } else {
-                stableCount = signature ? 1 : 0;
-                lastSignature = signature;
-            }
-            if (target) lastTarget = target;
-            if (target && stableCount >= 2) {
-                notifyImageDebug(target.settings, `捕获到稳定图片目标：第 ${target.row.floor} 楼，${target.segmentedSource.segments.length} 个分片`);
-                return target;
-            }
-            await delay(reason === 'message_swiped' ? 300 : 220);
+        await delay(reason === 'manual' ? 120 : 180);
+        this.#throwIfCancelled(requestVersion);
+        const stillCurrent = await this.#targetStillCurrentFast(target);
+        if (!stillCurrent) {
+            notifyImageDebug(target.settings, '图片目标在稳定确认时已变化，跳过本次生成', 'warning');
+            return null;
         }
 
-        if (lastTarget) {
-            notifyImageDebug(lastTarget.settings, `使用最后一次可见图片目标：第 ${lastTarget.row.floor} 楼`, 'warning');
+        notifyImageDebug(target.settings, `捕获到稳定图片目标：第 ${target.row.floor} 楼，${target.segmentedSource.segments.length} 个分片`);
+        return target;
+    }
+
+    async #targetStillCurrentFast(target) {
+        if (chatIdentity(this.storage.currentRef()) !== target.identity) {
+            notifyImageDebug(target.settings, '聊天已切换，丢弃本批图片结果', 'warning');
+            return false;
         }
-        return lastTarget;
+
+        const hit = await locateLatestAssistantMessage(target.handle);
+        if (hit?.message) {
+            const hitIndex = Number(hit.index);
+            const currentSource = applyRegexRules(String(hit.message?.mes || ''), target.settings.image.inputRegex).trim();
+            if (Number.isFinite(hitIndex) && hitIndex !== target.row.index) return false;
+            return hashString(currentSource) === target.sourceHash;
+        }
+
+        return this.#targetStillCurrent(target);
     }
 
     async #targetStillCurrent(target) {
@@ -802,7 +812,7 @@ export class ImagePipeline {
         notifyImageDebug(settings, `调用图片规划模型：messages=${prompt.length}`);
         const rawPlan = await this.generate({ prompt, responseLength: settings.image.responseLength, apiConfig: settings.image.api });
         this.#throwIfCancelled(requestVersion);
-        if (!await this.#targetStillCurrent(target)) {
+        if (!await this.#targetStillCurrentFast(target)) {
             return;
         }
         notifyImageDebug(settings, `图片规划模型返回：${String(rawPlan || '').length} 字符`);

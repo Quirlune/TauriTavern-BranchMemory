@@ -21,6 +21,19 @@ export async function readFullHistory(handle) {
     return buildSnapshot(messages);
 }
 
+export async function locateLatestAssistantMessage(handle, { scanLimit = 2000 } = {}) {
+    if (typeof handle?.locate?.findLastMessage !== 'function') return null;
+    try {
+        return await handle.locate.findLastMessage({
+            role: 'assistant',
+            scanLimit
+        });
+    } catch (error) {
+        console.warn('[BranchMemory] Chat locate.findLastMessage unavailable, falling back to history scan', error);
+        return null;
+    }
+}
+
 export function scopeHashForRef(ref) {
     if (!ref) return hashString('unknown');
     if (ref.kind === 'character') {

@@ -86,6 +86,21 @@ test('status generation ignores slash-command starts without after-commands acce
     assert.equal(gate.shouldTrigger('quiet'), false);
 });
 
+test('generation gate clears stale accepted state for skipped generation types', () => {
+    const gate = new AssistantGenerationGate();
+    gate.start('normal', false);
+    gate.afterCommands('normal', false);
+    assert.equal(gate.shouldTrigger('normal'), true);
+
+    assert.equal(gate.start('quiet', false), false);
+    assert.equal(gate.shouldTrigger('normal'), false);
+
+    gate.start('normal', false);
+    gate.afterCommands('normal', false);
+    assert.equal(gate.afterCommands('impersonate', false), false);
+    assert.equal(gate.shouldTrigger('normal'), false);
+});
+
 test('status render and chat injection regexes independently process the raw model output', () => {
     const output = processStatusOutput(
         '<status>HP=9</status><internal>hidden</internal>',

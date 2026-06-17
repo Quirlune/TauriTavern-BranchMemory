@@ -817,15 +817,16 @@ export class AssistantGenerationGate {
     }
 
     start(type, dryRun = false) {
+        this.accepted = false;
         if (dryRun || type === 'quiet') {
             return false;
         }
-        this.accepted = false;
         return true;
     }
 
     afterCommands(type, dryRun = false) {
         if (dryRun || type === 'quiet' || type === 'impersonate') {
+            this.accepted = false;
             return false;
         }
         this.accepted = true;

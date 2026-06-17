@@ -99,6 +99,8 @@ export async function bootstrapExtension() {
     const imageGenerationTimers = new Set();
     let imageGenerationCancelVersion = 0;
     let generationRendered = false;
+    let generationEnded = false;
+    let imageGenerationScheduledForTurn = false;
     const monitor = new RequestMonitor({
         eventSource,
         eventTypes: event_types,
@@ -125,6 +127,7 @@ export async function bootstrapExtension() {
     };
 
     const scheduleImageGeneration = ({ reason, delay = 900, waitForEngine = true } = {}) => {
+        cancelPendingImageGeneration();
         const cancelVersion = imageGenerationCancelVersion;
         const timer = setTimeout(() => {
             imageGenerationTimers.delete(timer);
@@ -137,6 +140,12 @@ export async function bootstrapExtension() {
                 .catch(error => ui.showError(error));
         }, delay);
         imageGenerationTimers.add(timer);
+    };
+
+    const scheduleAssistantImageGenerationOnce = () => {
+        if (imageGenerationScheduledForTurn) return;
+        imageGenerationScheduledForTurn = true;
+        scheduleImageGeneration({ reason: 'assistant_output', delay: 900, waitForEngine: true });
     };
 
     const schedule = (options, delay = 500) => {
@@ -279,7 +288,9 @@ export async function bootstrapExtension() {
         }
         generationRendered = true;
         schedule({ generateMemory: true, generateStatus: true, reason: 'assistant_output' }, 650);
-        scheduleImageGeneration({ reason: 'assistant_output', delay: 900, waitForEngine: true });
+        if (generationEnded || !event_types.GENERATION_ENDED) {
+            scheduleAssistantImageGenerationOnce();
+        }
         generationResetTimer = setTimeout(() => {
             generationGate.reset();
         }, 1200);
@@ -295,7 +306,7 @@ export async function bootstrapExtension() {
         generationGate.reset();
         clearTimeout(generationResetTimer);
         schedule({ generateMemory: true, generateStatus: true, reason: 'message_swiped' }, 500);
-        scheduleImageGeneration({ reason: 'message_swiped', delay: 1100, waitForEngine: true });
+        void enqueueImages({ generate: false, reason: 'message_swiped' });
     });
     eventSource.on(event_types.MESSAGE_EDITED, () => {
         ui.ensureStatusPosition();
@@ -308,15 +319,29 @@ export async function bootstrapExtension() {
         void enqueueImages({ generate: false, reason: 'message_deleted' });
     });
     eventSource.on(event_types.GENERATION_STARTED, async (type, _options, dryRun) => {
+        generationRendered = false;
+        generationEnded = false;
+        imageGenerationScheduledForTurn = false;
         if (!generationGate.start(type, dryRun)) {
             return;
         }
-        generationRendered = false;
         await enqueue({ generateMemory: false, generateStatus: false, reason: 'before_generation' });
     });
+    if (event_types.GENERATION_ENDED) {
+        eventSource.on(event_types.GENERATION_ENDED, () => {
+            generationEnded = true;
+            if (generationRendered) {
+                scheduleAssistantImageGenerationOnce();
+            }
+            generationGate.reset();
+            clearTimeout(generationResetTimer);
+        });
+    }
     eventSource.on(event_types.GENERATION_STOPPED, () => {
-        if (!generationRendered) {
+        if (!generationEnded) {
             cancelPendingImageGeneration();
+            imagePipeline?.cancel();
+            imageGenerationScheduledForTurn = false;
         }
         generationGate.reset();
         clearTimeout(generationResetTimer);
