@@ -185,7 +185,7 @@ export const DEFAULT_SETTINGS = {
             denoise: 1,
             positivePromptPrefix: '',
             negativePrompt: 'low quality, blurry, bad anatomy, extra fingers, watermark, text',
-            pollIntervalMs: 2000,
+            pollIntervalMs: 1000,
             maxPolls: 60,
             concurrency: 3,
             inputValuesTemplate: DEFAULT_BIZYAIR_INPUT_VALUES_TEMPLATE,

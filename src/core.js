@@ -774,6 +774,20 @@ export function promptEntriesToMessages(entries, values) {
         }));
 }
 
+export function promptEntriesUseMacros(entries, macroNames) {
+    const names = new Set((macroNames || []).map(name => String(name).trim()).filter(Boolean));
+    if (!names.size) return false;
+    const macroPattern = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
+    return (entries || []).some((entry) => {
+        if (!entry?.enabled || !entry?.content) return false;
+        macroPattern.lastIndex = 0;
+        for (const match of String(entry.content).matchAll(macroPattern)) {
+            if (names.has(match[1])) return true;
+        }
+        return false;
+    });
+}
+
 export function makeCacheKey({ scopeHash, floor, chain, recipe }) {
     return `v1.${scopeHash}.${Math.max(0, Number(floor) || 0)}.${chain}.${recipe}`;
 }

@@ -8,6 +8,7 @@ import {
     parseBizyAirApiExample,
     parseImagePlan,
     processStatusOutput,
+    promptEntriesUseMacros,
     promptEntriesToMessages,
     selectActiveMemory,
     segmentImageSource,
@@ -54,6 +55,16 @@ test('regex pipeline and prompt stack are deterministic', () => {
     assert.equal(cleaned, 'answer');
     const prompt = promptEntriesToMessages([{ enabled: true, role: 'user', content: 'Chat={{chat}}' }], { chat: cleaned });
     assert.deepEqual(prompt, [{ role: 'user', content: 'Chat=answer' }]);
+});
+
+test('prompt macro detection ignores disabled entries and unrelated macros', () => {
+    const entries = [
+        { enabled: false, content: 'Status={{status}}' },
+        { enabled: true, content: 'Body={{body}}' },
+        { enabled: true, content: 'Raw={{ status_raw }}' }
+    ];
+    assert.equal(promptEntriesUseMacros(entries, ['status']), false);
+    assert.equal(promptEntriesUseMacros(entries, ['status_raw']), true);
 });
 
 test('active memory uses the latest large summary and only later small summaries', () => {

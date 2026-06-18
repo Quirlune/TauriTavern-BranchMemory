@@ -7,7 +7,7 @@ import {
     setExtensionPrompt
 } from '/script.js';
 import { ConnectionManagerRequestService } from '/scripts/extensions/shared.js';
-import { AssistantGenerationGate, clampInteger, deepMerge } from './core.js';
+import { AssistantGenerationGate, clampInteger, deepMerge, promptEntriesUseMacros } from './core.js';
 import { DEFAULT_SETTINGS } from './defaults.js';
 import { BranchMemoryEngine } from './engine.js';
 import { characterPromptInfo } from './history.js';
@@ -20,6 +20,9 @@ const INJECTION_KEYS = {
     memory: 'TT_BRANCH_MEMORY_V1',
     status: 'TT_BRANCH_STATUS_V1'
 };
+const IMAGE_FAST_TRIGGER_DELAY_MS = 120;
+const IMAGE_STATUS_TRIGGER_DELAY_MS = 720;
+const IMAGE_STATUS_MACROS = ['status', 'previous_status', 'status_raw', 'status_injection'];
 let activeStorage = null;
 let activeMonitor = null;
 let activeImagePipeline = null;
@@ -44,7 +47,7 @@ function normalizeSettings(settings) {
     settings.image.bizyair.height = clampInteger(settings.image.bizyair.height, 64, 4096, 1024);
     settings.image.bizyair.steps = clampInteger(settings.image.bizyair.steps, 1, 200, 10);
     settings.image.bizyair.seed = clampInteger(settings.image.bizyair.seed, 1, Number.MAX_SAFE_INTEGER, 101);
-    settings.image.bizyair.pollIntervalMs = clampInteger(settings.image.bizyair.pollIntervalMs, 500, 30000, 2000);
+    settings.image.bizyair.pollIntervalMs = clampInteger(settings.image.bizyair.pollIntervalMs, 500, 30000, 1000);
     settings.image.bizyair.maxPolls = clampInteger(settings.image.bizyair.maxPolls, 1, 300, 60);
     settings.image.bizyair.concurrency = clampInteger(settings.image.bizyair.concurrency, 1, 8, 3);
     settings.image.bizyair.templateLibrary.items ||= [];
@@ -75,6 +78,11 @@ function applyInjection(channel, text, config) {
         false,
         roles[config.role] ?? extension_prompt_roles.SYSTEM
     );
+}
+
+function imagePromptNeedsFreshStatus(settings) {
+    return settings.status?.enabled !== false
+        && promptEntriesUseMacros(settings.image?.promptEntries, IMAGE_STATUS_MACROS);
 }
 
 export async function bootstrapExtension() {
@@ -145,7 +153,12 @@ export async function bootstrapExtension() {
     const scheduleAssistantImageGenerationOnce = () => {
         if (imageGenerationScheduledForTurn) return;
         imageGenerationScheduledForTurn = true;
-        scheduleImageGeneration({ reason: 'assistant_output', delay: 900, waitForEngine: true });
+        const needsFreshStatus = imagePromptNeedsFreshStatus(settings);
+        scheduleImageGeneration({
+            reason: 'assistant_output',
+            delay: needsFreshStatus ? IMAGE_STATUS_TRIGGER_DELAY_MS : IMAGE_FAST_TRIGGER_DELAY_MS,
+            waitForEngine: needsFreshStatus
+        });
     };
 
     const resetGenerationGateSoon = (delay = 1800) => {

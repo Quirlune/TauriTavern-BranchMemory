@@ -453,10 +453,14 @@ export class BizyAirClient {
         const settings = this.settingsProvider();
         const image = settings.image;
         const maxPolls = Math.max(1, Math.floor(Number(image.bizyair.maxPolls) || 60));
-        const intervalMs = Math.max(500, Math.floor(Number(image.bizyair.pollIntervalMs) || 2000));
+        const intervalMs = Math.max(500, Math.floor(Number(image.bizyair.pollIntervalMs) || 1000));
         for (let index = 0; index < maxPolls; index += 1) {
-            notifyImageDebug(settings, `${label} 等待轮询 ${index + 1}/${maxPolls}，${intervalMs}ms`);
-            await delay(intervalMs, signal);
+            if (index > 0) {
+                notifyImageDebug(settings, `${label} 等待轮询 ${index + 1}/${maxPolls}，${intervalMs}ms`);
+                await delay(intervalMs, signal);
+            } else {
+                notifyImageDebug(settings, `${label} 立即轮询 1/${maxPolls}`);
+            }
             const response = await fetch(`https://api.bizyair.cn/w/v1/webapp/task/openapi/query?task_id=${encodeURIComponent(taskId)}`, {
                 headers: { 'Authorization': `Bearer ${apiKey}` },
                 signal
@@ -696,7 +700,7 @@ export class ImagePipeline {
         const target = this.#targetFromContext(await this.#buildContext());
         if (!target) return null;
 
-        await delay(reason === 'manual' ? 120 : 180);
+        await delay(reason === 'manual' ? 60 : 80);
         this.#throwIfCancelled(requestVersion);
         const stillCurrent = await this.#targetStillCurrentFast(target);
         if (!stillCurrent) {
@@ -846,9 +850,7 @@ export class ImagePipeline {
                 notifyImageDebug(settings, `${label} 开始生成`);
                 const remoteUrl = await this.client.generate(item.prompt, signal, { label });
                 notifyImageDebug(settings, `${label} 获得远程图片 URL`, 'success');
-                const imageUrl = await cacheImageUrl(remoteUrl, settings.image.cacheAsDataUrl !== false, signal, settings, label);
-                notifyImageDebug(settings, `${label} 生成流程完成`, 'success');
-                return {
+                const previewItem = {
                     ...item,
                     id: slotId,
                     segmentText: segment.text,
@@ -856,8 +858,19 @@ export class ImagePipeline {
                     contentWrapped: segmentedSource.contentWrapped,
                     isLastSegment: item.segmentIndex === segmentedSource.segments.length,
                     remoteUrl,
-                    imageUrl,
+                    imageUrl: remoteUrl,
                     createdAt: new Date().toISOString()
+                };
+                if (await this.#targetStillCurrentFast(target)) {
+                    renderImageRecord({ key, messageIndex: row.index, items: [previewItem] });
+                    notifyImageDebug(settings, `${label} 已先插入远程图片`, 'success');
+                }
+                const imageUrl = await cacheImageUrl(remoteUrl, settings.image.cacheAsDataUrl !== false, signal, settings, label);
+                notifyImageDebug(settings, `${label} 生成流程完成`, 'success');
+                return {
+                    ...previewItem,
+                    imageUrl,
+                    cachedAt: new Date().toISOString()
                 };
             } catch (error) {
                 notifyImageDebug(settings, `${label} 失败：${error.message || error}`, 'error');

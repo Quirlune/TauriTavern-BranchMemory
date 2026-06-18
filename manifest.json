@@ -6,7 +6,7 @@
   "js": "index.js",
   "css": "style.css",
   "author": "Codex",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "TauriTavern branch-aware memory, status bar, call monitor, BizyAir image templates, and per-character appearance prompts.",
   "homePage": "https://tauritavern.github.io/api/",
   "auto_update": false,
