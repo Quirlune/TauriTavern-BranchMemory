@@ -15,6 +15,8 @@ import {
 import { characterPromptInfo, chatIdentity, locateLatestAssistantMessage, readFullHistory, scopeHashForRef } from './history.js';
 
 const IMAGE_GENERATION_REASONS = new Set(['assistant_output', 'manual']);
+const TARGET_STABLE_WAITS_MS = [140, 620, 320, 320];
+const TARGET_STABLE_WAITS_MANUAL_MS = [100, 260, 500, 320];
 
 function latestAssistantRow(snapshot) {
     for (let index = snapshot.rows.length - 1; index >= 0; index -= 1) {
@@ -30,13 +32,25 @@ function imageDebugEnabled(settings) {
 
 function notifyImageDebug(settings, message, level = 'info') {
     if (!imageDebugEnabled(settings)) return;
-    const text = `Branch Memory 图片测试：${message}`;
+    const debugText = `Branch Memory image debug: ${message}`;
     try {
         const method = globalThis.toastr?.[level] || globalThis.toastr?.info;
-        if (method) method(text);
-        else console.info(text);
+        if (method) method(debugText);
+        else console.info(debugText);
     } catch {
-        console.info(text);
+        console.info(debugText);
+    }
+}
+
+function notifyImageProgress(settings, message, level = 'info') {
+    if (imageDebugEnabled(settings)) return;
+    const progressText = `Branch Memory: ${message}`;
+    try {
+        const method = globalThis.toastr?.[level] || globalThis.toastr?.info;
+        if (method) method(progressText);
+        else console.info(progressText);
+    } catch {
+        console.info(progressText);
     }
 }
 
@@ -505,7 +519,14 @@ export class ImagePipeline {
     enqueue(options = {}) {
         return this.refresh(options)
             .catch((error) => {
-                if (!error?.branchMemoryCancelled) this.onError(error);
+                if (error?.branchMemoryCancelled) return;
+                const settings = this.getSettings();
+                notifyImageProgress(settings, '图像生成失败', 'error');
+                if (imageDebugEnabled(settings)) {
+                    this.onError(error);
+                } else {
+                    console.warn('[BranchMemory] Image pipeline error', error);
+                }
             });
     }
 
@@ -597,6 +618,7 @@ export class ImagePipeline {
             return running.promise;
         }
 
+        notifyImageProgress(settings, '开始图像生成');
         const controller = new AbortController();
         const promise = this.#generateTarget({ target, controller, reason, requestVersion })
             .finally(() => {
@@ -696,20 +718,34 @@ export class ImagePipeline {
     }
 
     async #captureStableTarget({ reason, requestVersion }) {
-        this.#throwIfCancelled(requestVersion);
-        const target = this.#targetFromContext(await this.#buildContext());
-        if (!target) return null;
+        const waits = reason === 'manual' ? TARGET_STABLE_WAITS_MANUAL_MS : TARGET_STABLE_WAITS_MS;
+        let lastSignature = '';
+        for (let attempt = 0; attempt < waits.length; attempt += 1) {
+            this.#throwIfCancelled(requestVersion);
+            const target = this.#targetFromContext(await this.#buildContext());
+            if (!target) {
+                await delay(waits[attempt], undefined);
+                continue;
+            }
 
-        await delay(reason === 'manual' ? 60 : 80);
-        this.#throwIfCancelled(requestVersion);
-        const stillCurrent = await this.#targetStillCurrentFast(target);
-        if (!stillCurrent) {
-            notifyImageDebug(target.settings, '图片目标在稳定确认时已变化，跳过本次生成', 'warning');
-            return null;
+            await delay(waits[attempt], undefined);
+            this.#throwIfCancelled(requestVersion);
+            const confirmed = this.#targetFromContext(await this.#buildContext());
+            if (confirmed?.signature === target.signature) {
+                notifyImageDebug(confirmed.settings, `捕获到稳定图片目标：第 ${confirmed.row.floor} 楼，${confirmed.segmentedSource.segments.length} 个分片`);
+                return confirmed;
+            }
+
+            const signature = confirmed?.signature || '';
+            if (signature && signature !== lastSignature) {
+                notifyImageDebug(target.settings, `图片目标仍在被其它插件更新，等待重新确认：${attempt + 1}/${waits.length}`, 'warning');
+                lastSignature = signature;
+            }
         }
 
-        notifyImageDebug(target.settings, `捕获到稳定图片目标：第 ${target.row.floor} 楼，${target.segmentedSource.segments.length} 个分片`);
-        return target;
+        const settings = this.getSettings();
+        notifyImageDebug(settings, '多次确认后仍没有稳定的 AI 回复，跳过本次图片生成', 'warning');
+        return null;
     }
 
     async #targetStillCurrentFast(target) {
@@ -787,6 +823,7 @@ export class ImagePipeline {
             segmentedSource
         } = target;
         notifyImageDebug(settings, `开始图片规划：第 ${row.floor} 楼，${segmentedSource.segments.length} 个分片`);
+        notifyImageProgress(settings, '正在规划图片');
         const startFloor = Math.max(1, row.floor - settings.image.contextFloors + 1);
         const positionTag = settings.image.positionTag || 'position';
         const promptTag = settings.image.promptTag || 'positive_prompt';
@@ -838,6 +875,7 @@ export class ImagePipeline {
         let items = [];
         const concurrency = Math.min(plan.length, Math.max(1, Math.floor(Number(settings.image.bizyair.concurrency) || 3)));
         notifyImageDebug(settings, `开始 BizyAir 批量生成：${plan.length} 张，并发=${concurrency}`);
+        notifyImageProgress(settings, '正在生成图片');
         items = await mapConcurrent(plan, concurrency, async (item, index) => {
             const label = `图片 ${index + 1}/${plan.length}（分片 ${item.segmentIndex}）`;
             const segment = segmentedSource.segments[item.segmentIndex - 1];
@@ -905,6 +943,7 @@ export class ImagePipeline {
         notifyImageDebug(settings, `图片记录已保存：第 ${row.floor} 楼，${items.length} 张`, 'success');
         renderImageRecord(record);
         notifyImageDebug(settings, '图片已插回聊天正文', 'success');
+        notifyImageProgress(settings, '完成图像生成', 'success');
         this.updateStats({ lastImageAt: record.createdAt, imageCount: items.length, imageFloor: row.floor });
     }
 

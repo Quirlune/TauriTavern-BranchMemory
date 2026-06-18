@@ -114,6 +114,27 @@ test('full history reader reuses tail-validated snapshots and appends new messag
     clearHistoryCache();
 });
 
+test('full history reader detects in-place message mutations', async () => {
+    clearHistoryCache();
+    const source = Array.from({ length: 260 }, (_, index) => ({
+        is_user: index % 2 === 0,
+        name: index % 2 === 0 ? 'User' : 'AI',
+        mes: `message ${index}`,
+        send_date: String(index)
+    }));
+    const { handle, calls } = pagedHistoryHandle(() => source);
+
+    const first = await readFullHistory(handle);
+    source[259].mes = 'message 259 cleaned by another plugin';
+    const second = await readFullHistory(handle);
+    const rebuilt = buildSnapshot(source);
+
+    assert.notEqual(second.chain, first.chain);
+    assert.equal(second.chain, rebuilt.chain);
+    assert.equal(calls.beforePages, 2);
+    clearHistoryCache();
+});
+
 test('transcript ranges include the full assistant response for each user floor', () => {
     const snapshot = buildSnapshot(messages);
     const text = transcriptForFloorRange(snapshot, 1, 1);

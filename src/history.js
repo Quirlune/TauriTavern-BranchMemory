@@ -10,17 +10,18 @@ function cacheableHandle(handle) {
 
 function rememberHistory(handle, snapshot) {
     if (cacheableHandle(handle)) {
-        historyCache.set(handle, snapshot);
+        historyCache.set(handle, {
+            snapshot,
+            fingerprints: snapshot.messages.map(message => canonicalMessage(message))
+        });
     }
     return snapshot;
 }
 
-function sameMessage(left, right) {
-    return canonicalMessage(left) === canonicalMessage(right);
-}
-
-function snapshotFromTailCache(cached, tail) {
+function snapshotFromTailCache(cachedRecord, tail) {
+    const cached = cachedRecord?.snapshot;
     if (!cached) return null;
+    const fingerprints = cachedRecord.fingerprints || cached.messages.map(message => canonicalMessage(message));
 
     const tailMessages = Array.isArray(tail?.messages) ? tail.messages : [];
     const tailStart = Math.max(0, Math.floor(Number(tail?.startIndex) || 0));
@@ -32,13 +33,13 @@ function snapshotFromTailCache(cached, tail) {
     }
 
     if (tailStart === 0 && tailEnd === cachedLength) {
-        return tailMessages.every((message, offset) => sameMessage(message, cached.messages[offset]))
+        return tailMessages.every((message, offset) => canonicalMessage(message) === fingerprints[offset])
             ? cached
             : buildSnapshot(tailMessages);
     }
 
     if (tailEnd === cachedLength && tailStart < cachedLength) {
-        const unchanged = tailMessages.every((message, offset) => sameMessage(message, cached.messages[tailStart + offset]));
+        const unchanged = tailMessages.every((message, offset) => canonicalMessage(message) === fingerprints[tailStart + offset]);
         return unchanged ? cached : null;
     }
 
@@ -46,7 +47,7 @@ function snapshotFromTailCache(cached, tail) {
         const overlap = cachedLength - tailStart;
         if (overlap <= 0) return null;
         for (let offset = 0; offset < overlap; offset += 1) {
-            if (!sameMessage(tailMessages[offset], cached.messages[tailStart + offset])) {
+            if (canonicalMessage(tailMessages[offset]) !== fingerprints[tailStart + offset]) {
                 return null;
             }
         }
