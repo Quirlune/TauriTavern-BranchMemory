@@ -116,6 +116,55 @@ export function buildSnapshot(messages) {
     };
 }
 
+export function appendMessagesToSnapshot(snapshot, messages) {
+    const additions = (messages || []).filter(Boolean);
+    if (!additions.length) return snapshot;
+    if (!snapshot?.messages?.length) return buildSnapshot(additions);
+
+    let left = Number.parseInt(String(snapshot.chain).slice(0, 8), 16);
+    let right = Number.parseInt(String(snapshot.chain).slice(8, 16), 16);
+    if (!Number.isFinite(left) || !Number.isFinite(right)) {
+        return buildSnapshot([...(snapshot.messages || []), ...additions]);
+    }
+
+    let floor = Math.max(0, Number(snapshot.totalFloors) || 0);
+    const outputMessages = [...snapshot.messages];
+    const rows = [...snapshot.rows];
+    const floors = snapshot.floors.map(item => ({ ...item }));
+
+    for (let offset = 0; offset < additions.length; offset += 1) {
+        const index = outputMessages.length;
+        const message = additions[offset];
+        const role = roleOf(message);
+        if (role === 'user') {
+            floor += 1;
+        }
+
+        const canonical = `${index}\u001f${canonicalMessage(message)}\u001e`;
+        left = mix32(left, canonical, 0x01000193);
+        right = mix32(right, canonical, 0x85ebca6b);
+        const chain = `${left.toString(16).padStart(8, '0')}${right.toString(16).padStart(8, '0')}`;
+        outputMessages.push(message);
+        rows.push({ index, floor, role, chain, message });
+
+        if (role === 'user') {
+            floors.push({ number: floor, startIndex: index, endIndex: index, chain, userRowIndex: rows.length - 1 });
+        } else if (floors.length > 0) {
+            const current = floors[floors.length - 1];
+            current.endIndex = index;
+            current.chain = chain;
+        }
+    }
+
+    return {
+        messages: outputMessages,
+        rows,
+        floors,
+        totalFloors: floor,
+        chain: rows.at(-1)?.chain || hashString('empty-chat')
+    };
+}
+
 export function getFloor(snapshot, floorNumber) {
     return snapshot.floors[floorNumber - 1] || null;
 }

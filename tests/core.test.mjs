@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+    appendMessagesToSnapshot,
     AssistantGenerationGate,
     applyRegexRules,
     boundaries,
@@ -16,7 +17,7 @@ import {
     statusInsertionIndex,
     transcriptForFloorRange
 } from '../src/core.js';
-import { characterPromptInfo } from '../src/history.js';
+import { characterPromptInfo, clearHistoryCache, readFullHistory } from '../src/history.js';
 import { sanitizeMonitorValue } from '../src/monitor.js';
 
 const messages = [
@@ -26,6 +27,41 @@ const messages = [
     { is_user: true, name: 'User', mes: 'u2', send_date: '3' },
     { is_user: false, name: 'AI', mes: 'a2', send_date: '4' }
 ];
+
+function pagedHistoryHandle(messagesProvider) {
+    const calls = { tail: 0, beforePages: 0 };
+    const handle = {
+        history: {
+            async tail({ limit }) {
+                calls.tail += 1;
+                const source = messagesProvider();
+                const startIndex = Math.max(0, source.length - limit);
+                return {
+                    startIndex,
+                    messages: source.slice(startIndex),
+                    hasMoreBefore: startIndex > 0
+                };
+            },
+            async beforePages(page, { limit, pages }) {
+                calls.beforePages += 1;
+                const source = messagesProvider();
+                const output = [];
+                let endIndex = Math.max(0, Number(page.startIndex) || 0);
+                for (let index = 0; index < pages && endIndex > 0; index += 1) {
+                    const startIndex = Math.max(0, endIndex - limit);
+                    output.push({
+                        startIndex,
+                        messages: source.slice(startIndex, endIndex),
+                        hasMoreBefore: startIndex > 0
+                    });
+                    endIndex = startIndex;
+                }
+                return output;
+            }
+        }
+    };
+    return { handle, calls };
+}
 
 test('counts only user messages as floors and anchors after the assistant reply', () => {
     const snapshot = buildSnapshot(messages);
@@ -40,6 +76,42 @@ test('shared prefixes keep the same chain and divergent branches change afterwar
     const branch = buildSnapshot([...messages.slice(0, 3), { ...messages[3], mes: 'different user branch' }, messages[4]]);
     assert.equal(base.rows[2].chain, branch.rows[2].chain);
     assert.notEqual(base.rows[3].chain, branch.rows[3].chain);
+});
+
+test('appended snapshot matches a full rebuild', () => {
+    const base = buildSnapshot(messages.slice(0, 4));
+    const appended = appendMessagesToSnapshot(base, messages.slice(4));
+    const rebuilt = buildSnapshot(messages);
+    assert.equal(appended.chain, rebuilt.chain);
+    assert.equal(appended.totalFloors, rebuilt.totalFloors);
+    assert.deepEqual(appended.floors, rebuilt.floors);
+});
+
+test('full history reader reuses tail-validated snapshots and appends new messages', async () => {
+    clearHistoryCache();
+    const source = Array.from({ length: 300 }, (_, index) => ({
+        is_user: index % 2 === 0,
+        name: index % 2 === 0 ? 'User' : 'AI',
+        mes: `message ${index}`,
+        send_date: String(index)
+    }));
+    const { handle, calls } = pagedHistoryHandle(() => source);
+
+    const first = await readFullHistory(handle);
+    assert.equal(first.messages.length, 300);
+    assert.equal(calls.beforePages, 1);
+
+    const second = await readFullHistory(handle);
+    assert.strictEqual(second, first);
+    assert.equal(calls.beforePages, 1);
+
+    source.push({ is_user: false, name: 'AI', mes: 'new assistant reply', send_date: '300' });
+    const third = await readFullHistory(handle);
+    const rebuilt = buildSnapshot(source);
+    assert.equal(third.messages.length, 301);
+    assert.equal(third.chain, rebuilt.chain);
+    assert.equal(calls.beforePages, 1);
+    clearHistoryCache();
 });
 
 test('transcript ranges include the full assistant response for each user floor', () => {

@@ -10,7 +10,7 @@ import { ConnectionManagerRequestService } from '/scripts/extensions/shared.js';
 import { AssistantGenerationGate, clampInteger, deepMerge, promptEntriesUseMacros } from './core.js';
 import { DEFAULT_SETTINGS } from './defaults.js';
 import { BranchMemoryEngine } from './engine.js';
-import { characterPromptInfo } from './history.js';
+import { characterPromptInfo, clearHistoryCache } from './history.js';
 import { ImagePipeline } from './images.js';
 import { RequestMonitor } from './monitor.js';
 import { StorageGateway, waitForTauriHost } from './storage.js';
@@ -88,6 +88,7 @@ function imagePromptNeedsFreshStatus(settings) {
 export async function bootstrapExtension() {
     activeMonitor?.stop();
     activeImagePipeline?.cancel();
+    clearHistoryCache();
     const host = await waitForTauriHost();
     const storage = new StorageGateway(host);
     activeStorage = storage;
@@ -284,6 +285,7 @@ export async function bootstrapExtension() {
     await storage.saveSettings(settings);
 
     eventSource.on(event_types.CHAT_CHANGED, () => {
+        clearHistoryCache();
         cancelPendingImageGeneration();
         imagePipeline?.cancel();
         schedule({ generateMemory: false, generateStatus: false, reason: 'chat_changed' }, 250);
@@ -317,6 +319,7 @@ export async function bootstrapExtension() {
         ui.ensureStatusPosition();
     });
     eventSource.on(event_types.MESSAGE_SWIPED, () => {
+        clearHistoryCache(storage.currentHandle());
         ui.ensureStatusPosition();
         cancelPendingImageGeneration();
         imagePipeline?.cancel();
@@ -326,10 +329,12 @@ export async function bootstrapExtension() {
         schedule({ generateMemory: true, generateStatus: true, reason: 'message_swiped' }, 500);
     });
     eventSource.on(event_types.MESSAGE_EDITED, () => {
+        clearHistoryCache(storage.currentHandle());
         ui.ensureStatusPosition();
         schedule({ generateMemory: true, generateStatus: false, reason: 'message_edited' }, 500);
     });
     eventSource.on(event_types.MESSAGE_DELETED, () => {
+        clearHistoryCache(storage.currentHandle());
         ui.ensureStatusPosition();
         schedule({ generateMemory: false, generateStatus: false, reason: 'message_deleted' }, 500);
     });
@@ -374,6 +379,7 @@ export async function cleanExtensionData() {
     activeMonitor = null;
     activeImagePipeline?.cancel();
     activeImagePipeline = null;
+    clearHistoryCache();
     const host = await waitForTauriHost();
     const storage = activeStorage || new StorageGateway(host);
     await storage.cleanAll();

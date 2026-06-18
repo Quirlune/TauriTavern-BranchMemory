@@ -1,10 +1,77 @@
-import { buildSnapshot, hashString } from './core.js';
+import { appendMessagesToSnapshot, buildSnapshot, canonicalMessage, hashString } from './core.js';
 
 const PAGE_SIZE = 240;
 const PAGE_BATCH = 8;
+let historyCache = new WeakMap();
 
-export async function readFullHistory(handle) {
+function cacheableHandle(handle) {
+    return handle && (typeof handle === 'object' || typeof handle === 'function');
+}
+
+function rememberHistory(handle, snapshot) {
+    if (cacheableHandle(handle)) {
+        historyCache.set(handle, snapshot);
+    }
+    return snapshot;
+}
+
+function sameMessage(left, right) {
+    return canonicalMessage(left) === canonicalMessage(right);
+}
+
+function snapshotFromTailCache(cached, tail) {
+    if (!cached) return null;
+
+    const tailMessages = Array.isArray(tail?.messages) ? tail.messages : [];
+    const tailStart = Math.max(0, Math.floor(Number(tail?.startIndex) || 0));
+    const tailEnd = tailStart + tailMessages.length;
+    const cachedLength = cached.messages.length;
+
+    if (!tailMessages.length) {
+        return cachedLength === 0 ? cached : buildSnapshot([]);
+    }
+
+    if (tailStart === 0 && tailEnd === cachedLength) {
+        return tailMessages.every((message, offset) => sameMessage(message, cached.messages[offset]))
+            ? cached
+            : buildSnapshot(tailMessages);
+    }
+
+    if (tailEnd === cachedLength && tailStart < cachedLength) {
+        const unchanged = tailMessages.every((message, offset) => sameMessage(message, cached.messages[tailStart + offset]));
+        return unchanged ? cached : null;
+    }
+
+    if (tailStart <= cachedLength && cachedLength < tailEnd) {
+        const overlap = cachedLength - tailStart;
+        if (overlap <= 0) return null;
+        for (let offset = 0; offset < overlap; offset += 1) {
+            if (!sameMessage(tailMessages[offset], cached.messages[tailStart + offset])) {
+                return null;
+            }
+        }
+        return appendMessagesToSnapshot(cached, tailMessages.slice(overlap));
+    }
+
+    return null;
+}
+
+export function clearHistoryCache(handle = null) {
+    if (handle && cacheableHandle(handle)) {
+        historyCache.delete(handle);
+        return;
+    }
+    historyCache = new WeakMap();
+}
+
+export async function readFullHistory(handle, { force = false } = {}) {
     let page = await handle.history.tail({ limit: PAGE_SIZE });
+    if (!force && cacheableHandle(handle)) {
+        const cached = historyCache.get(handle);
+        const snapshot = snapshotFromTailCache(cached, page);
+        if (snapshot) return rememberHistory(handle, snapshot);
+    }
+
     const pages = [page];
 
     while (page.hasMoreBefore) {
@@ -18,7 +85,7 @@ export async function readFullHistory(handle) {
 
     pages.sort((left, right) => left.startIndex - right.startIndex);
     const messages = pages.flatMap(item => item.messages || []);
-    return buildSnapshot(messages);
+    return rememberHistory(handle, buildSnapshot(messages));
 }
 
 export async function locateLatestAssistantMessage(handle, { scanLimit = 2000 } = {}) {
