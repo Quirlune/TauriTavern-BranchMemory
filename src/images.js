@@ -15,6 +15,8 @@ import {
 import { characterPromptInfo, chatIdentity, locateLatestAssistantMessage, readFullHistory, scopeHashForRef } from './history.js';
 
 const IMAGE_GENERATION_REASONS = new Set(['assistant_output', 'manual']);
+const IMAGE_CACHE_RETENTION_DAYS = 70;
+const IMAGE_CACHE_RETENTION_MS = IMAGE_CACHE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const TARGET_STABLE_WAITS_MS = [140, 620, 320, 320];
 const TARGET_STABLE_WAITS_MANUAL_MS = [100, 260, 500, 320];
 
@@ -91,6 +93,20 @@ function jsonStringContent(value) {
 
 function randomSeed() {
     return Math.floor(Math.random() * Number.MAX_SAFE_INTEGER) + 1;
+}
+
+function imageCacheExpiresAt(createdAt) {
+    const timestamp = Date.parse(createdAt);
+    if (!Number.isFinite(timestamp)) return '';
+    return new Date(timestamp + IMAGE_CACHE_RETENTION_MS).toISOString();
+}
+
+function imageRecordExpired(record, now = Date.now()) {
+    if (!record) return false;
+    const expiresAt = Date.parse(record.expiresAt);
+    if (Number.isFinite(expiresAt)) return expiresAt <= now;
+    const createdAt = Date.parse(record.createdAt);
+    return Number.isFinite(createdAt) && createdAt + IMAGE_CACHE_RETENTION_MS <= now;
 }
 
 function joinPositivePrompt(prefix, prompt) {
@@ -571,57 +587,6 @@ function insertAtAnchor(root, anchor, occurrence, placement, node) {
     return false;
 }
 
-function directChildWithin(node, ancestor) {
-    let current = node;
-    while (current && current.parentNode !== ancestor) {
-        current = current.parentNode;
-    }
-    return current || null;
-}
-
-function cloneWithoutId(element) {
-    const clone = element.cloneNode(false);
-    clone.removeAttribute?.('id');
-    return clone;
-}
-
-function moveImageOutsideGalContainer(wrapper, item) {
-    if (!item.contentWrapped) return false;
-    const content = wrapper.closest?.('.gal-content');
-    const container = content?.closest?.('.gal-container');
-    if (!content || !container?.parentNode) return false;
-
-    const boundary = directChildWithin(wrapper, content);
-    if (boundary !== wrapper) return false;
-
-    const parent = container.parentNode;
-    if (item.isLastSegment) {
-        content.removeChild(wrapper);
-        parent.insertBefore(wrapper, container.nextSibling);
-        return true;
-    }
-
-    const afterContainer = cloneWithoutId(container);
-    const afterContent = cloneWithoutId(content);
-    let next = wrapper.nextSibling;
-    while (next) {
-        const moving = next;
-        next = next.nextSibling;
-        afterContent.appendChild(moving);
-    }
-
-    content.removeChild(wrapper);
-    afterContainer.appendChild(afterContent);
-
-    const footer = Array.from(container.children)
-        .find(child => child !== content && child.classList?.contains('gal-footer'));
-    if (footer) afterContainer.appendChild(footer.cloneNode(true));
-
-    parent.insertBefore(wrapper, container.nextSibling);
-    parent.insertBefore(afterContainer, wrapper.nextSibling);
-    return true;
-}
-
 function findMessageTextElement(messageIndex) {
     const message = document.querySelector(`.mes[mesid="${cssEscape(messageIndex)}"]`)
         || document.querySelector(`#chat .mes:nth-of-type(${Number(messageIndex) + 1})`);
@@ -652,7 +617,6 @@ function renderImageItem(record, item) {
             root.appendChild(wrapper);
         }
     }
-    moveImageOutsideGalContainer(wrapper, item);
     wrapper.ttbmImageItem = item;
     wrapper.innerHTML = `
         <button class="ttbm-image-open" type="button" data-ttbm-image-open aria-label="查看大图">
@@ -1060,7 +1024,7 @@ export class ImagePipeline {
     }
 
     async #getCachedImageForTarget(target, availableKeys = null) {
-        const exact = await this.storage.getImage(target.key);
+        const exact = await this.#getFreshImage(target.key, { availableKeys });
         if (exact) return exact;
         return this.#getLatestImageForFloorChain({
             scopeHash: target.scopeHash,
@@ -1070,6 +1034,38 @@ export class ImagePipeline {
         });
     }
 
+    async #deleteImageCacheRecord(key, availableKeys = null) {
+        try {
+            await this.storage.deleteImage(key);
+            availableKeys?.delete?.(key);
+            return true;
+        } catch (error) {
+            console.warn('[BranchMemory] Unable to delete expired image cache', key, error);
+            return false;
+        }
+    }
+
+    async #getFreshImage(key, { now = Date.now(), availableKeys = null } = {}) {
+        const record = await this.storage.getImage(key);
+        if (!imageRecordExpired(record, now)) return record;
+        await this.#deleteImageCacheRecord(key, availableKeys);
+        return null;
+    }
+
+    async #pruneExpiredImageCache(availableKeys) {
+        const now = Date.now();
+        let removed = 0;
+        for (const key of [...availableKeys]) {
+            const record = await this.storage.getImage(key);
+            if (!imageRecordExpired(record, now)) continue;
+            if (await this.#deleteImageCacheRecord(key, availableKeys)) removed += 1;
+        }
+        if (removed) {
+            notifyImageDebug(this.getSettings(), `已清理过期图片缓存 ${removed} 条（保留 ${IMAGE_CACHE_RETENTION_DAYS} 天）`);
+        }
+        return removed;
+    }
+
     async #getLatestImageForFloorChain({ scopeHash, floor, chain, availableKeys = null }) {
         const keys = availableKeys || new Set(await this.storage.listImageKeys());
         const prefix = `v1.${scopeHash}.${Math.max(0, Number(floor) || 0)}.${chain}.`;
@@ -1077,8 +1073,9 @@ export class ImagePipeline {
         if (!candidates.length) return null;
 
         const records = [];
+        const now = Date.now();
         for (const key of candidates) {
-            const record = await this.storage.getImage(key);
+            const record = await this.#getFreshImage(key, { now, availableKeys: keys });
             if (record) records.push(record);
         }
         records.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
@@ -1207,6 +1204,7 @@ export class ImagePipeline {
             return;
         }
 
+        const createdAt = new Date().toISOString();
         const record = {
             version: 1,
             kind: 'image',
@@ -1218,7 +1216,8 @@ export class ImagePipeline {
             anchorChain: floorInfo.chain,
             sourceHash,
             items,
-            createdAt: new Date().toISOString(),
+            createdAt,
+            expiresAt: imageCacheExpiresAt(createdAt),
             reason
         };
         await this.storage.setImage(key, record);
@@ -1231,6 +1230,8 @@ export class ImagePipeline {
 
     async #renderCached({ snapshot, scopeHash, recipe }) {
         const available = new Set(await this.storage.listImageKeys());
+        if (!available.size) return 0;
+        await this.#pruneExpiredImageCache(available);
         if (!available.size) return 0;
         const records = [];
         for (const floor of snapshot.floors) {

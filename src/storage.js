@@ -112,6 +112,10 @@ export class StorageGateway {
         return this.setRecord(IMAGE_TABLE, key, value);
     }
 
+    async deleteImage(key) {
+        await this.globalStore.deleteJson({ namespace: EXTENSION_NAMESPACE, table: IMAGE_TABLE, key });
+    }
+
     async listImageKeys() {
         return this.globalStore.listKeys({ namespace: EXTENSION_NAMESPACE, table: IMAGE_TABLE });
     }
