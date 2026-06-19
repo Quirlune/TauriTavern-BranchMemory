@@ -388,5 +388,8 @@ export async function cleanExtensionData() {
     }
     document.getElementById('ttbm-status-host')?.remove();
     document.getElementById('ttbm-custom-status-style')?.remove();
+    document.getElementById('ttbm-image-viewer')?.remove();
+    document.documentElement.classList.remove('ttbm-image-viewer-open');
+    document.body.classList.remove('ttbm-image-viewer-open');
     document.querySelectorAll('[data-ttbm-image-slot]').forEach(node => node.remove());
 }

@@ -122,6 +122,280 @@ function cssEscape(value) {
     return String(value).replace(/["\\]/g, '\\$&');
 }
 
+let imageOpenDelegationBound = false;
+let imageViewerState = null;
+
+function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+}
+
+function pointerDistance(first, second) {
+    return Math.hypot(second.x - first.x, second.y - first.y);
+}
+
+function pointerCenter(first, second) {
+    return {
+        x: (first.x + second.x) / 2,
+        y: (first.y + second.y) / 2
+    };
+}
+
+function viewerPromptText(item) {
+    const generationPrompt = String(item?.generationPrompt || item?.positivePrompt || '').trim();
+    const plannerPrompt = String(item?.prompt || '').trim();
+    const negativePrompt = String(item?.negativePrompt || '').trim();
+    const parts = [];
+    const positive = generationPrompt || plannerPrompt;
+    if (positive) parts.push(['正向提示词', positive]);
+    if (plannerPrompt && generationPrompt && plannerPrompt !== generationPrompt) {
+        parts.push(['规划提示词', plannerPrompt]);
+    }
+    if (negativePrompt) parts.push(['负面提示词', negativePrompt]);
+    return parts.map(([title, text]) => `${title}\n${text}`).join('\n\n');
+}
+
+function applyViewerTransform(state) {
+    state.image.style.transform = `translate3d(${state.offsetX}px, ${state.offsetY}px, 0) scale(${state.scale})`;
+}
+
+function resetViewerTransform(state) {
+    state.scale = 1;
+    state.offsetX = 0;
+    state.offsetY = 0;
+    state.gesture = null;
+    state.lastPan = null;
+    applyViewerTransform(state);
+}
+
+function zoomViewerAt(state, factor, clientX, clientY) {
+    const previousScale = state.scale;
+    const nextScale = clamp(previousScale * factor, 1, 6);
+    if (nextScale === previousScale) return;
+
+    const rect = state.stage.getBoundingClientRect();
+    const centerX = clientX - rect.left - rect.width / 2;
+    const centerY = clientY - rect.top - rect.height / 2;
+    const ratio = nextScale / previousScale;
+    state.offsetX = centerX - (centerX - state.offsetX) * ratio;
+    state.offsetY = centerY - (centerY - state.offsetY) * ratio;
+    state.scale = nextScale;
+    if (state.scale === 1) {
+        state.offsetX = 0;
+        state.offsetY = 0;
+    }
+    applyViewerTransform(state);
+}
+
+function activeViewerPointers(state) {
+    return [...state.pointers.values()];
+}
+
+function updateGestureFromPointers(state) {
+    const pointers = activeViewerPointers(state);
+    if (pointers.length >= 2) {
+        const first = pointers[0];
+        const second = pointers[1];
+        state.gesture = {
+            distance: Math.max(1, pointerDistance(first, second)),
+            center: pointerCenter(first, second),
+            scale: state.scale,
+            offsetX: state.offsetX,
+            offsetY: state.offsetY
+        };
+        state.lastPan = null;
+    } else if (pointers.length === 1) {
+        state.gesture = null;
+        state.lastPan = { x: pointers[0].x, y: pointers[0].y };
+    } else {
+        state.gesture = null;
+        state.lastPan = null;
+    }
+}
+
+function handleViewerPointerMove(state, event) {
+    if (!state.pointers.has(event.pointerId)) return;
+    state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const pointers = activeViewerPointers(state);
+    if (pointers.length >= 2) {
+        const first = pointers[0];
+        const second = pointers[1];
+        const center = pointerCenter(first, second);
+        const distance = Math.max(1, pointerDistance(first, second));
+        const gesture = state.gesture || {
+            distance,
+            center,
+            scale: state.scale,
+            offsetX: state.offsetX,
+            offsetY: state.offsetY
+        };
+        state.gesture = gesture;
+        const nextScale = clamp(gesture.scale * (distance / gesture.distance), 1, 6);
+        const rect = state.stage.getBoundingClientRect();
+        const startX = gesture.center.x - rect.left - rect.width / 2;
+        const startY = gesture.center.y - rect.top - rect.height / 2;
+        const currentX = center.x - rect.left - rect.width / 2;
+        const currentY = center.y - rect.top - rect.height / 2;
+        const contentX = (startX - gesture.offsetX) / gesture.scale;
+        const contentY = (startY - gesture.offsetY) / gesture.scale;
+        state.scale = nextScale;
+        state.offsetX = currentX - contentX * nextScale;
+        state.offsetY = currentY - contentY * nextScale;
+        if (state.scale === 1) {
+            state.offsetX = 0;
+            state.offsetY = 0;
+        }
+        applyViewerTransform(state);
+        event.preventDefault();
+        return;
+    }
+
+    if (pointers.length === 1 && state.lastPan && state.scale > 1) {
+        const pointer = pointers[0];
+        state.offsetX += pointer.x - state.lastPan.x;
+        state.offsetY += pointer.y - state.lastPan.y;
+        state.lastPan = { x: pointer.x, y: pointer.y };
+        applyViewerTransform(state);
+        event.preventDefault();
+    }
+}
+
+function closeImageViewer() {
+    const state = imageViewerState;
+    if (!state) return;
+    state.viewer.hidden = true;
+    state.image.removeAttribute('src');
+    state.prompt.value = '';
+    state.pointers.clear();
+    document.documentElement.classList.remove('ttbm-image-viewer-open');
+    document.body.classList.remove('ttbm-image-viewer-open');
+}
+
+function ensureImageViewer() {
+    if (imageViewerState?.viewer?.isConnected) return imageViewerState;
+    imageViewerState = null;
+    const existing = document.getElementById('ttbm-image-viewer');
+    if (existing) existing.remove();
+
+    const viewer = document.createElement('div');
+    viewer.id = 'ttbm-image-viewer';
+    viewer.className = 'ttbm-image-viewer';
+    viewer.hidden = true;
+    viewer.tabIndex = -1;
+    viewer.innerHTML = `
+        <div class="ttbm-image-viewer-backdrop" data-ttbm-image-viewer-close></div>
+        <section class="ttbm-image-viewer-panel" role="dialog" aria-modal="true" aria-label="图片预览">
+            <header class="ttbm-image-viewer-head">
+                <strong>图片预览</strong>
+                <div class="ttbm-image-viewer-actions">
+                    <button class="menu_button" type="button" data-ttbm-image-viewer-reset>重置</button>
+                    <button class="menu_button" type="button" data-ttbm-image-viewer-copy>复制提示词</button>
+                    <button class="menu_button" type="button" data-ttbm-image-viewer-close>关闭</button>
+                </div>
+            </header>
+            <div class="ttbm-image-viewer-body">
+                <div class="ttbm-image-viewer-stage">
+                    <img class="ttbm-image-viewer-image" alt="" draggable="false">
+                </div>
+                <aside class="ttbm-image-viewer-prompt">
+                    <strong>模型提示词</strong>
+                    <textarea class="text_pole ttbm-code" readonly></textarea>
+                </aside>
+            </div>
+        </section>
+    `;
+    document.body.appendChild(viewer);
+
+    const state = {
+        viewer,
+        stage: viewer.querySelector('.ttbm-image-viewer-stage'),
+        image: viewer.querySelector('.ttbm-image-viewer-image'),
+        prompt: viewer.querySelector('.ttbm-image-viewer-prompt textarea'),
+        pointers: new Map(),
+        scale: 1,
+        offsetX: 0,
+        offsetY: 0,
+        gesture: null,
+        lastPan: null
+    };
+
+    viewer.addEventListener('click', (event) => {
+        if (event.target.closest('[data-ttbm-image-viewer-close]')) closeImageViewer();
+        if (event.target.closest('[data-ttbm-image-viewer-reset]')) resetViewerTransform(state);
+        if (event.target.closest('[data-ttbm-image-viewer-copy]')) {
+            const text = state.prompt.value;
+            const fallbackCopy = () => {
+                state.prompt.focus();
+                state.prompt.select();
+                document.execCommand?.('copy');
+                globalThis.toastr?.success?.('已复制提示词');
+            };
+            if (navigator.clipboard?.writeText) {
+                navigator.clipboard.writeText(text)
+                    .then(() => globalThis.toastr?.success?.('已复制提示词'))
+                    .catch(fallbackCopy);
+            } else {
+                fallbackCopy();
+            }
+        }
+    });
+    viewer.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') closeImageViewer();
+    });
+    state.stage.addEventListener('wheel', (event) => {
+        event.preventDefault();
+        zoomViewerAt(state, event.deltaY < 0 ? 1.12 : 0.88, event.clientX, event.clientY);
+    }, { passive: false });
+    state.stage.addEventListener('dblclick', (event) => {
+        event.preventDefault();
+        if (state.scale > 1) resetViewerTransform(state);
+        else zoomViewerAt(state, 2.4, event.clientX, event.clientY);
+    });
+    state.stage.addEventListener('pointerdown', (event) => {
+        state.stage.setPointerCapture?.(event.pointerId);
+        state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        updateGestureFromPointers(state);
+        event.preventDefault();
+    });
+    state.stage.addEventListener('pointermove', (event) => handleViewerPointerMove(state, event));
+    for (const eventName of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+        state.stage.addEventListener(eventName, (event) => {
+            state.pointers.delete(event.pointerId);
+            updateGestureFromPointers(state);
+        });
+    }
+
+    imageViewerState = state;
+    return state;
+}
+
+function openImageViewer(item) {
+    if (!item?.imageUrl) return;
+    const state = ensureImageViewer();
+    resetViewerTransform(state);
+    state.image.src = item.imageUrl;
+    state.image.alt = item.prompt || 'BizyAir image';
+    state.prompt.value = viewerPromptText(item) || '没有记录提示词。';
+    state.viewer.hidden = false;
+    state.viewer.focus?.();
+    document.documentElement.classList.add('ttbm-image-viewer-open');
+    document.body.classList.add('ttbm-image-viewer-open');
+}
+
+function ensureImageOpenDelegation() {
+    if (imageOpenDelegationBound) return;
+    document.addEventListener('click', (event) => {
+        const button = event.target.closest?.('[data-ttbm-image-open]');
+        if (!button) return;
+        const wrapper = button.closest('[data-ttbm-image-slot]');
+        const item = wrapper?.ttbmImageItem;
+        if (!item?.imageUrl) return;
+        event.preventDefault();
+        event.stopPropagation();
+        openImageViewer(item);
+    });
+    imageOpenDelegationBound = true;
+}
+
 function escapeAttribute(value) {
     return String(value ?? '')
         .replaceAll('&', '&amp;')
@@ -357,6 +631,7 @@ function findMessageTextElement(messageIndex) {
 function renderImageItem(record, item) {
     const root = findMessageTextElement(record.messageIndex);
     if (!root || !item?.imageUrl) return false;
+    ensureImageOpenDelegation();
     const slotId = `${record.key}.${item.id}`;
     let wrapper = root.querySelector(`[data-ttbm-image-slot="${cssEscape(slotId)}"]`);
     if (!wrapper) {
@@ -378,8 +653,11 @@ function renderImageItem(record, item) {
         }
     }
     moveImageOutsideGalContainer(wrapper, item);
+    wrapper.ttbmImageItem = item;
     wrapper.innerHTML = `
-        <img class="ttbm-image-element" src="${escapeAttribute(item.imageUrl)}" alt="${escapeAttribute(item.prompt || 'BizyAir image')}" loading="lazy">
+        <button class="ttbm-image-open" type="button" data-ttbm-image-open aria-label="查看大图">
+            <img class="ttbm-image-element" src="${escapeAttribute(item.imageUrl)}" alt="${escapeAttribute(item.prompt || 'BizyAir image')}" loading="lazy">
+        </button>
     `;
     return true;
 }
@@ -886,6 +1164,8 @@ export class ImagePipeline {
             const slotId = hashString(`${key}:${item.id}:${item.segmentIndex}:${item.prompt}`);
             try {
                 notifyImageDebug(settings, `${label} 开始生成`);
+                const generationPrompt = joinPositivePrompt(settings.image.bizyair.positivePromptPrefix, item.prompt);
+                const negativePrompt = String(settings.image.bizyair.negativePrompt || '').trim();
                 const remoteUrl = await this.client.generate(item.prompt, signal, { label });
                 notifyImageDebug(settings, `${label} 获得远程图片 URL`, 'success');
                 const previewItem = {
@@ -895,6 +1175,8 @@ export class ImagePipeline {
                     segmentOccurrence: segment.occurrence,
                     contentWrapped: segmentedSource.contentWrapped,
                     isLastSegment: item.segmentIndex === segmentedSource.segments.length,
+                    generationPrompt,
+                    negativePrompt,
                     remoteUrl,
                     imageUrl: remoteUrl,
                     createdAt: new Date().toISOString()

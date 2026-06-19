@@ -315,6 +315,22 @@ body.ttbm-modal-open {
     clear: both;
 }
 
+.ttbm-image-open {
+    display: block;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    cursor: zoom-in;
+}
+
+.ttbm-image-open:focus-visible {
+    outline: 2px solid var(--SmartThemeQuoteColor);
+    outline-offset: 3px;
+}
+
 .ttbm-image-element {
     display: block;
     width: 100%;
@@ -326,6 +342,117 @@ body.ttbm-modal-open {
     border: 0;
     border-radius: 0;
     background: transparent;
+}
+
+.ttbm-image-viewer[hidden] {
+    display: none !important;
+}
+
+html.ttbm-image-viewer-open,
+body.ttbm-image-viewer-open {
+    overflow: hidden !important;
+    overscroll-behavior: none;
+}
+
+.ttbm-image-viewer {
+    position: fixed;
+    inset: 0;
+    z-index: 10080;
+    display: grid;
+    place-items: center;
+    padding: max(12px, var(--tt-inset-top, 0px)) max(12px, var(--tt-inset-right, 0px)) max(12px, var(--tt-inset-bottom, 0px)) max(12px, var(--tt-inset-left, 0px));
+}
+
+.ttbm-image-viewer-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, .84);
+    backdrop-filter: blur(6px);
+}
+
+.ttbm-image-viewer-panel {
+    position: relative;
+    width: min(1280px, 96vw);
+    height: min(92vh, var(--tt-base-viewport-height, 92vh));
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--SmartThemeBodyColor) 18%, transparent);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 94%, #080808);
+    color: var(--SmartThemeBodyColor);
+    box-shadow: 0 28px 90px rgba(0, 0, 0, .55);
+}
+
+.ttbm-image-viewer-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    border-bottom: 1px solid color-mix(in srgb, var(--SmartThemeBodyColor) 12%, transparent);
+}
+
+.ttbm-image-viewer-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.ttbm-image-viewer-body {
+    min-height: 0;
+    flex: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+}
+
+.ttbm-image-viewer-stage {
+    min-width: 0;
+    min-height: 0;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    background: #050505;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+}
+
+.ttbm-image-viewer-stage:active {
+    cursor: grabbing;
+}
+
+.ttbm-image-viewer-image {
+    display: block;
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    transform-origin: center center;
+    will-change: transform;
+    user-select: none;
+    -webkit-user-drag: none;
+}
+
+.ttbm-image-viewer-prompt {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    border-left: 1px solid color-mix(in srgb, var(--SmartThemeBodyColor) 12%, transparent);
+    background: rgba(0, 0, 0, .16);
+}
+
+.ttbm-image-viewer-prompt textarea {
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+    resize: none;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
 }
 
 @media (max-width: 700px) {
@@ -378,6 +505,36 @@ body.ttbm-modal-open {
 
     .ttbm-card-actions .menu_button {
         flex: 1;
+    }
+
+    .ttbm-image-viewer {
+        align-items: stretch;
+        padding: env(safe-area-inset-top, 0px) 0 0;
+        height: var(--tt-base-viewport-height, 100vh);
+        min-height: var(--tt-base-viewport-height, 100vh);
+        max-height: var(--tt-base-viewport-height, 100vh);
+    }
+
+    .ttbm-image-viewer-panel {
+        width: 100vw;
+        height: 100%;
+        max-height: none;
+        border-radius: 0;
+    }
+
+    .ttbm-image-viewer-head {
+        align-items: flex-start;
+    }
+
+    .ttbm-image-viewer-body {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(0, 1fr) minmax(150px, 34vh);
+    }
+
+    .ttbm-image-viewer-prompt {
+        border-left: 0;
+        border-top: 1px solid color-mix(in srgb, var(--SmartThemeBodyColor) 12%, transparent);
+        padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
     }
 
 }
