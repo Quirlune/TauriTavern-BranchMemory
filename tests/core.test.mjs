@@ -15,6 +15,8 @@ import {
     segmentImageSource,
     statusRecordOutputs,
     statusInsertionIndex,
+    statusInjectionTargetFloor,
+    summaryContextEndFloor,
     transcriptForFloorRange
 } from '../src/core.js';
 import { characterPromptInfo, clearHistoryCache, readFullHistory } from '../src/history.js';
@@ -176,6 +178,22 @@ test('status insertion depth counts messages backward from the end', () => {
     assert.equal(statusInsertionIndex(10, 1), 9);
     assert.equal(statusInsertionIndex(10, 3), 7);
     assert.equal(statusInsertionIndex(2, 99), 0);
+});
+
+test('small summary context can read extra floors without moving the summary end floor', () => {
+    assert.equal(summaryContextEndFloor(20, 8, 3), 11);
+    assert.equal(summaryContextEndFloor(9, 8, 3), 9);
+    assert.equal(summaryContextEndFloor(20, 8, -3), 8);
+});
+
+test('status injection uses the previous floor before regenerating an assistant reply', () => {
+    const assistantEnded = buildSnapshot(messages);
+    assert.equal(statusInjectionTargetFloor(assistantEnded, { reason: 'before_generation', generationType: 'regenerate' }), 1);
+    assert.equal(statusInjectionTargetFloor(assistantEnded, { reason: 'before_generation', generationType: 'continue' }), 2);
+    assert.equal(statusInjectionTargetFloor(assistantEnded, { reason: 'refresh' }), 2);
+
+    const userEnded = buildSnapshot(messages.slice(0, 4));
+    assert.equal(statusInjectionTargetFloor(userEnded, { reason: 'before_generation', generationType: 'normal' }), 2);
 });
 
 test('status generation ignores slash-command starts without after-commands acceptance', () => {

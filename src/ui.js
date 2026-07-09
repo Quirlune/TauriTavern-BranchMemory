@@ -331,6 +331,7 @@ export class SettingsUi {
                 <div class="ttbm-grid ttbm-grid-5">
                     <label class="ttbm-check"><input type="checkbox" data-setting="memory.enabled" ${memory.enabled ? 'checked' : ''}>启用记忆</label>
                     ${numberField('小总结每 N 楼', 'memory.smallEvery', memory.smallEvery, 1)}
+                    ${numberField('小总结额外读取 K 楼', 'memory.smallContextExtraFloors', memory.smallContextExtraFloors || 0, 0)}
                     ${numberField('大总结每 N 楼', 'memory.largeEvery', memory.largeEvery, 1)}
                     ${numberField('保留最近 N 楼不处理', 'memory.reserveFloors', memory.reserveFloors, 0)}
                     ${numberField('每轮最多记忆调用', 'memory.maxCallsPerTurn', memory.maxCallsPerTurn, 0, 20)}
@@ -658,7 +659,7 @@ export class SettingsUi {
         return `
             <section class="ttbm-section">
                 <div class="ttbm-section-head"><h3>${title}</h3><button class="menu_button" type="button" data-add-entry="${path}">新增条目</button></div>
-                <p class="ttbm-hint">按从上到下的顺序发送。常用宏：{{chat}}、{{body}}、{{body_segments}}、{{segmented_body}}、{{source_segments}}、{{assistant}}、{{floor}}、{{floor_start}}、{{floor_end}}、{{total_floors}}、{{eligible_floor}}、{{previous_large}}、{{small_summaries}}、{{memory}}、{{status}}、{{previous_status}}、{{status_raw}}、{{status_injection}}、{{last_user}}、{{last_assistant}}、{{max_images}}、{{position_tag}}、{{prompt_tag}}、{{character_prompt}}、{{appearance_prompt}}、{{character_name}}、{{character_key}}、{{character_id}}、{{character_file}}</p>
+                <p class="ttbm-hint">按从上到下的顺序发送。常用宏：{{chat}}、{{summary_chat}}、{{context_chat}}、{{extra_chat}}、{{small_extra_floors}}、{{body}}、{{body_segments}}、{{segmented_body}}、{{source_segments}}、{{assistant}}、{{floor}}、{{floor_start}}、{{floor_end}}、{{summary_floor_start}}、{{summary_floor_end}}、{{context_floor_start}}、{{context_floor_end}}、{{extra_floor_start}}、{{extra_floor_end}}、{{total_floors}}、{{eligible_floor}}、{{previous_large}}、{{small_summaries}}、{{memory}}、{{status}}、{{previous_status}}、{{status_raw}}、{{status_injection}}、{{last_user}}、{{last_assistant}}、{{max_images}}、{{position_tag}}、{{prompt_tag}}、{{character_prompt}}、{{appearance_prompt}}、{{character_name}}、{{character_key}}、{{character_id}}、{{character_file}}</p>
                 <div class="ttbm-list">${promptEntriesHtml(entries, path)}</div>
             </section>
         `;

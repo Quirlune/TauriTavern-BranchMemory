@@ -8,7 +8,9 @@ import {
     recipeHash,
     renderTemplate,
     selectActiveMemory,
+    statusInjectionTargetFloor,
     statusRecordOutputs,
+    summaryContextEndFloor,
     transcriptForFloorRange
 } from './core.js';
 import { chatIdentity, readFullHistory, scopeHashForRef } from './history.js';
@@ -64,7 +66,7 @@ export class BranchMemoryEngine {
         this.lastError = '';
     }
 
-    async refresh({ generateMemory = false, generateStatus = false, reason = 'refresh' } = {}) {
+    async refresh({ generateMemory = false, generateStatus = false, reason = 'refresh', generationType = '' } = {}) {
         const settings = this.getSettings();
         if (!settings.enabled) {
             this.applyInjection('memory', '', settings.memory.injection);
@@ -83,6 +85,7 @@ export class BranchMemoryEngine {
 
         const smallRecipe = recipeHash({
             every: settings.memory.smallEvery,
+            contextExtraFloors: settings.memory.smallContextExtraFloors,
             responseLength: settings.memory.responseLength,
             api: settings.memory.api,
             inputRegex: settings.memory.inputRegex,
@@ -101,8 +104,8 @@ export class BranchMemoryEngine {
 
         const smallBoundaries = boundaries(settings.memory.smallEvery, eligibleFloor);
         const largeBoundaries = boundaries(settings.memory.largeEvery, eligibleFloor);
-        const smallKey = floor => this.#memoryKey(scopeHash, snapshot, floor, smallRecipe);
-        const largeKey = floor => this.#memoryKey(scopeHash, snapshot, floor, largeRecipe);
+        const smallKey = floor => this.#memoryKey(scopeHash, snapshot, floor, smallRecipe, this.#memoryContextAnchorFloor(snapshot, settings, floor));
+        const largeKey = floor => this.#memoryKey(scopeHash, snapshot, floor, largeRecipe, this.#memoryContextAnchorFloor(snapshot, settings, floor));
 
         const [smallAvailableKeys, largeAvailableKeys] = await Promise.all([
             this.storage.listSmallKeys(),
@@ -143,8 +146,9 @@ export class BranchMemoryEngine {
         const memoryText = this.#applyMemoryInjection(settings, active);
 
         let statusRecord = null;
+        let statusRecipe = null;
         if (settings.status.enabled) {
-            const statusRecipe = recipeHash({
+            statusRecipe = recipeHash({
                 contextFloors: settings.status.contextFloors,
                 responseLength: settings.status.responseLength,
                 api: settings.status.api,
@@ -175,8 +179,18 @@ export class BranchMemoryEngine {
 
         const effectiveStatus = statusRecord || runtime.status || null;
         const statusOutputs = statusRecordOutputs(effectiveStatus, settings.status);
+        const injectionStatus = await this.#statusForInjection({
+            settings,
+            snapshot,
+            scopeHash,
+            recipe: statusRecipe,
+            effectiveStatus,
+            reason,
+            generationType
+        });
+        const injectionStatusOutputs = statusRecordOutputs(injectionStatus, settings.status);
         this.renderStatus(statusOutputs.renderContent, settings.status);
-        this.#applyStatusInjection(settings, statusOutputs.injectionContent);
+        this.#applyStatusInjection(settings, injectionStatusOutputs.injectionContent);
 
         if (effectiveStatus) {
             statusRecord = {
@@ -200,7 +214,8 @@ export class BranchMemoryEngine {
             activeSmall: active.small,
             status: statusRecord,
             updatedAt: new Date().toISOString(),
-            reason
+            reason,
+            generationType
         };
         await this.storage.setChatRuntime(runtimeValue, handle);
         this.lastError = '';
@@ -212,17 +227,41 @@ export class BranchMemoryEngine {
         });
     }
 
-    #memoryKey(scopeHash, snapshot, floor, recipe) {
-        const anchor = getFloor(snapshot, floor);
-        if (!anchor) throw new Error(`找不到第 ${floor} 楼的分支锚点。`);
+    #memoryKey(scopeHash, snapshot, floor, recipe, anchorFloor = floor) {
+        const anchor = getFloor(snapshot, anchorFloor);
+        if (!anchor) throw new Error(`找不到第 ${anchorFloor} 楼的分支锚点。`);
         return makeCacheKey({ scopeHash, floor, chain: anchor.chain, recipe });
     }
 
-    #baseValues({ snapshot, startFloor, endFloor, settings, previousLarge = '', smallSummaries = '', memory = '', previousStatus = '' }) {
+    #memoryContextAnchorFloor(snapshot, settings, floor) {
+        return Math.max(floor, summaryContextEndFloor(snapshot.totalFloors, floor, settings.memory?.smallContextExtraFloors));
+    }
+
+    #baseValues({ snapshot, startFloor, endFloor, settings, previousLarge = '', smallSummaries = '', memory = '', previousStatus = '', contextEndFloor = endFloor }) {
+        const inputRegex = settings.memory?.inputRegex || settings.status?.inputRegex || [];
+        const resolvedContextEndFloor = Math.max(endFloor, summaryContextEndFloor(snapshot.totalFloors, endFloor, Math.max(0, Number(contextEndFloor) - endFloor)));
+        const hasExtraContext = resolvedContextEndFloor > endFloor;
+        const summaryChat = transcriptForFloorRange(snapshot, startFloor, endFloor, inputRegex);
+        const contextChat = hasExtraContext
+            ? transcriptForFloorRange(snapshot, startFloor, resolvedContextEndFloor, inputRegex)
+            : summaryChat;
+        const extraChat = hasExtraContext
+            ? transcriptForFloorRange(snapshot, endFloor + 1, resolvedContextEndFloor, inputRegex)
+            : '';
         return {
-            chat: transcriptForFloorRange(snapshot, startFloor, endFloor, settings.memory?.inputRegex || settings.status?.inputRegex || []),
+            chat: contextChat,
+            summary_chat: summaryChat,
+            context_chat: contextChat,
+            extra_chat: extraChat,
             floor_start: startFloor,
             floor_end: endFloor,
+            summary_floor_start: startFloor,
+            summary_floor_end: endFloor,
+            context_floor_start: startFloor,
+            context_floor_end: resolvedContextEndFloor,
+            extra_floor_start: hasExtraContext ? endFloor + 1 : '',
+            extra_floor_end: hasExtraContext ? resolvedContextEndFloor : '',
+            small_extra_floors: Math.max(0, resolvedContextEndFloor - endFloor),
             total_floors: snapshot.totalFloors,
             eligible_floor: Math.max(0, snapshot.totalFloors - (settings.memory?.reserveFloors || 0)),
             previous_large: previousLarge,
@@ -236,8 +275,9 @@ export class BranchMemoryEngine {
 
     async #generateSmall({ settings, snapshot, scopeHash, floor, recipe, largeRecords, identity }) {
         const startFloor = Math.max(1, floor - settings.memory.smallEvery + 1);
+        const contextEndFloor = this.#memoryContextAnchorFloor(snapshot, settings, floor);
         const previousLarge = latestBefore(largeRecords, startFloor)?.content || '';
-        const values = this.#baseValues({ snapshot, startFloor, endFloor: floor, settings, previousLarge });
+        const values = this.#baseValues({ snapshot, startFloor, endFloor: floor, settings, previousLarge, contextEndFloor });
         const prompt = promptEntriesToMessages(settings.memory.smallPromptEntries, values);
         const content = await this.#runModel(prompt, settings.memory.responseLength, settings.memory.outputRegex, '小总结', settings.memory.api);
         if (!this.#isCurrent(identity)) return null;
@@ -250,11 +290,13 @@ export class BranchMemoryEngine {
             recipe,
             startFloor,
             endFloor: floor,
+            contextEndFloor,
+            contextExtraFloors: Math.max(0, contextEndFloor - floor),
             anchorChain: anchor.chain,
             content,
             createdAt: new Date().toISOString()
         };
-        await this.storage.setSmall(this.#memoryKey(scopeHash, snapshot, floor, recipe), record);
+        await this.storage.setSmall(this.#memoryKey(scopeHash, snapshot, floor, recipe, contextEndFloor), record);
         return record;
     }
 
@@ -287,7 +329,7 @@ export class BranchMemoryEngine {
             content,
             createdAt: new Date().toISOString()
         };
-        await this.storage.setLarge(this.#memoryKey(scopeHash, snapshot, floor, recipe), record);
+        await this.storage.setLarge(this.#memoryKey(scopeHash, snapshot, floor, recipe, this.#memoryContextAnchorFloor(snapshot, settings, floor)), record);
         return record;
     }
 
@@ -316,6 +358,30 @@ export class BranchMemoryEngine {
         };
         await this.storage.setStatus(key, record);
         return record;
+    }
+
+    async #statusForInjection({ settings, snapshot, scopeHash, recipe, effectiveStatus, reason, generationType }) {
+        if (!settings.status.enabled || !settings.status.injection.enabled || !recipe) {
+            return effectiveStatus;
+        }
+        const targetFloor = statusInjectionTargetFloor(snapshot, { reason, generationType });
+        if (targetFloor === snapshot.totalFloors) {
+            return effectiveStatus;
+        }
+        if (Number(effectiveStatus?.floor) === targetFloor && effectiveStatus?.recipe === recipe) {
+            return effectiveStatus;
+        }
+        const anchor = getFloor(snapshot, targetFloor);
+        if (!anchor) {
+            return null;
+        }
+        const key = makeCacheKey({
+            scopeHash,
+            floor: targetFloor,
+            chain: anchor.chain,
+            recipe
+        });
+        return this.storage.getStatus(key);
     }
 
     async #runModel(prompt, responseLength, outputRegex, label, apiConfig) {

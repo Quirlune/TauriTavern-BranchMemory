@@ -29,6 +29,7 @@ let activeImagePipeline = null;
 
 function normalizeSettings(settings) {
     settings.memory.smallEvery = clampInteger(settings.memory.smallEvery, 1, 100000, 8);
+    settings.memory.smallContextExtraFloors = clampInteger(settings.memory.smallContextExtraFloors, 0, 100000, 0);
     settings.memory.largeEvery = clampInteger(settings.memory.largeEvery, 1, 100000, 32);
     settings.memory.reserveFloors = clampInteger(settings.memory.reserveFloors, 0, 100000, 4);
     settings.memory.maxCallsPerTurn = clampInteger(settings.memory.maxCallsPerTurn, 0, 20, 2);
@@ -98,7 +99,7 @@ export async function bootstrapExtension() {
     let saveTimer = null;
     let pendingSettingsApply = false;
     let refreshTimer = null;
-    let pendingRefresh = { generateMemory: false, generateStatus: false, reason: 'scheduled' };
+    let pendingRefresh = { generateMemory: false, generateStatus: false, reason: 'scheduled', generationType: '' };
     let queue = Promise.resolve();
     let engine;
     let imagePipeline;
@@ -173,10 +174,11 @@ export async function bootstrapExtension() {
         pendingRefresh.generateMemory ||= Boolean(options.generateMemory);
         pendingRefresh.generateStatus ||= Boolean(options.generateStatus);
         pendingRefresh.reason = options.reason || pendingRefresh.reason;
+        pendingRefresh.generationType = options.generationType || pendingRefresh.generationType || '';
         clearTimeout(refreshTimer);
         refreshTimer = setTimeout(() => {
             const task = pendingRefresh;
-            pendingRefresh = { generateMemory: false, generateStatus: false, reason: 'scheduled' };
+            pendingRefresh = { generateMemory: false, generateStatus: false, reason: 'scheduled', generationType: '' };
             void enqueue(task);
         }, delay);
     };
@@ -345,7 +347,7 @@ export async function bootstrapExtension() {
         if (!generationGate.start(type, dryRun)) {
             return;
         }
-        await enqueue({ generateMemory: false, generateStatus: false, reason: 'before_generation' });
+        await enqueue({ generateMemory: false, generateStatus: false, reason: 'before_generation', generationType: type || '' });
     });
     if (event_types.GENERATION_ENDED) {
         eventSource.on(event_types.GENERATION_ENDED, () => {

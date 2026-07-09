@@ -199,6 +199,28 @@ export function boundaries(interval, eligibleFloor) {
     return output;
 }
 
+export function summaryContextEndFloor(totalFloors, endFloor, extraFloors = 0) {
+    const total = Math.max(0, Math.floor(Number(totalFloors) || 0));
+    const end = Math.max(0, Math.floor(Number(endFloor) || 0));
+    const extra = Math.max(0, Math.floor(Number(extraFloors) || 0));
+    return Math.min(total, end + extra);
+}
+
+export function statusInjectionTargetFloor(snapshot, { reason = '', generationType = '' } = {}) {
+    const currentFloor = Math.max(0, Math.floor(Number(snapshot?.totalFloors) || 0));
+    const lastRole = snapshot?.rows?.at?.(-1)?.role || '';
+    const type = String(generationType || '').toLowerCase();
+    if (
+        reason === 'before_generation'
+        && lastRole === 'assistant'
+        && currentFloor > 0
+        && type !== 'continue'
+    ) {
+        return currentFloor - 1;
+    }
+    return currentFloor;
+}
+
 export function applyRegexRules(input, rules = []) {
     let output = String(input ?? '');
     for (const rule of rules) {

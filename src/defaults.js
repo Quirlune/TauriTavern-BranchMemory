@@ -20,6 +20,7 @@ export const DEFAULT_SETTINGS = {
             includePreset: true
         },
         smallEvery: 8,
+        smallContextExtraFloors: 0,
         largeEvery: 32,
         reserveFloors: 4,
         maxCallsPerTurn: 2,
@@ -48,7 +49,7 @@ export const DEFAULT_SETTINGS = {
                 title: '小总结 · 本段输入',
                 enabled: true,
                 role: 'user',
-                content: '请总结用户楼层 {{floor_start}} 到 {{floor_end}}。\n\n已有大总结：\n{{previous_large}}\n\n本段对话：\n{{chat}}\n\n直接输出可复用的小总结。'
+                content: '请总结用户楼层 {{floor_start}} 到 {{floor_end}}。\n\n已有大总结：\n{{previous_large}}\n\n本段对话：\n{{summary_chat}}\n\n后续参考（只用于理解上下文，不要总结进本段）：\n{{extra_chat}}\n\n直接输出可复用的小总结。'
             }
         ],
         largePromptEntries: [
