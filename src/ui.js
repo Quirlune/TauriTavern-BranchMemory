@@ -1,3 +1,4 @@
+import { DOMPurify } from '/lib.js';
 import { escapeHtml, parseBizyAirApiExample, statusInsertionIndex, uniqueId } from './core.js';
 
 function readPath(target, path) {
@@ -787,7 +788,8 @@ export class SettingsUi {
             return;
         }
         const rendered = statusSettings.renderAsHtml ? content : escapeHtml(content);
-        host.innerHTML = String(statusSettings.htmlTemplate || '{{status}}').replaceAll('{{status}}', rendered);
+        const markup = String(statusSettings.htmlTemplate || '{{status}}').replaceAll('{{status}}', rendered);
+        host.innerHTML = statusSettings.renderAsHtml ? DOMPurify.sanitize(markup) : markup;
         host.hidden = false;
     }
 }

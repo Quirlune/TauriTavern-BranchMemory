@@ -8,11 +8,11 @@ function cacheableHandle(handle) {
     return handle && (typeof handle === 'object' || typeof handle === 'function');
 }
 
-function rememberHistory(handle, snapshot) {
+function rememberHistory(handle, snapshot, fingerprints = null) {
     if (cacheableHandle(handle)) {
         historyCache.set(handle, {
             snapshot,
-            fingerprints: snapshot.messages.map(message => canonicalMessage(message))
+            fingerprints: fingerprints || snapshot.messages.map(message => canonicalMessage(message))
         });
     }
     return snapshot;
@@ -29,18 +29,24 @@ function snapshotFromTailCache(cachedRecord, tail) {
     const cachedLength = cached.messages.length;
 
     if (!tailMessages.length) {
-        return cachedLength === 0 ? cached : buildSnapshot([]);
+        return cachedLength === 0
+            ? { snapshot: cached, fingerprints }
+            : { snapshot: buildSnapshot([]), fingerprints: [] };
     }
 
     if (tailStart === 0 && tailEnd === cachedLength) {
-        return tailMessages.every((message, offset) => canonicalMessage(message) === fingerprints[offset])
-            ? cached
-            : buildSnapshot(tailMessages);
+        if (tailMessages.every((message, offset) => canonicalMessage(message) === fingerprints[offset])) {
+            return { snapshot: cached, fingerprints };
+        }
+        return {
+            snapshot: buildSnapshot(tailMessages),
+            fingerprints: tailMessages.map(message => canonicalMessage(message))
+        };
     }
 
     if (tailEnd === cachedLength && tailStart < cachedLength) {
         const unchanged = tailMessages.every((message, offset) => canonicalMessage(message) === fingerprints[tailStart + offset]);
-        return unchanged ? cached : null;
+        return unchanged ? { snapshot: cached, fingerprints } : null;
     }
 
     if (tailStart <= cachedLength && cachedLength < tailEnd) {
@@ -51,7 +57,11 @@ function snapshotFromTailCache(cachedRecord, tail) {
                 return null;
             }
         }
-        return appendMessagesToSnapshot(cached, tailMessages.slice(overlap));
+        const additions = tailMessages.slice(overlap);
+        return {
+            snapshot: appendMessagesToSnapshot(cached, additions),
+            fingerprints: [...fingerprints, ...additions.map(message => canonicalMessage(message))]
+        };
     }
 
     return null;
@@ -69,8 +79,8 @@ export async function readFullHistory(handle, { force = false } = {}) {
     let page = await handle.history.tail({ limit: PAGE_SIZE });
     if (!force && cacheableHandle(handle)) {
         const cached = historyCache.get(handle);
-        const snapshot = snapshotFromTailCache(cached, page);
-        if (snapshot) return rememberHistory(handle, snapshot);
+        const resolved = snapshotFromTailCache(cached, page);
+        if (resolved) return rememberHistory(handle, resolved.snapshot, resolved.fingerprints);
     }
 
     const pages = [page];

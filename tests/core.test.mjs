@@ -116,6 +116,35 @@ test('full history reader reuses tail-validated snapshots and appends new messag
     clearHistoryCache();
 });
 
+test('full history cache hits only fingerprint the tail page', async () => {
+    clearHistoryCache();
+    let textReads = 0;
+    const source = Array.from({ length: 600 }, (_, index) => {
+        const message = {
+            is_user: index % 2 === 0,
+            name: index % 2 === 0 ? 'User' : 'AI',
+            send_date: String(index)
+        };
+        Object.defineProperty(message, 'mes', {
+            enumerable: true,
+            get() {
+                textReads += 1;
+                return `message ${index}`;
+            }
+        });
+        return message;
+    });
+    const { handle, calls } = pagedHistoryHandle(() => source);
+
+    await readFullHistory(handle);
+    textReads = 0;
+    await readFullHistory(handle);
+
+    assert.equal(textReads, 240);
+    assert.equal(calls.beforePages, 1);
+    clearHistoryCache();
+});
+
 test('full history reader detects in-place message mutations', async () => {
     clearHistoryCache();
     const source = Array.from({ length: 260 }, (_, index) => ({
