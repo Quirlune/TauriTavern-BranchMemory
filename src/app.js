@@ -28,6 +28,25 @@ let activeMonitor = null;
 let activeImagePipeline = null;
 
 function normalizeSettings(settings) {
+    if (Number(settings.version) < 2) {
+        const legacy = settings.image?.bizyair;
+        const runpod = settings.image?.runpod;
+        if (legacy && runpod) {
+            if (!runpod.positivePromptPrefix && legacy.positivePromptPrefix) {
+                runpod.positivePromptPrefix = String(legacy.positivePromptPrefix);
+            }
+            for (const key of ['width', 'height', 'seed']) {
+                if (Number.isFinite(Number(legacy[key]))) runpod[key] = Number(legacy[key]);
+            }
+            if (typeof legacy.randomSeed === 'boolean') runpod.randomSeed = legacy.randomSeed;
+        }
+        const plannerSystemEntry = settings.image?.promptEntries?.find(entry => entry?.enabled !== false && entry?.role === 'system');
+        if (plannerSystemEntry && !String(plannerSystemEntry.content || '').includes('stop_image_generation')) {
+            plannerSystemEntry.content = `${String(plannerSystemEntry.content || '').trim()}\n如果正文明显是报错、拒答、占位符或其它无意义内容，只输出 <stop_image_generation>原因</stop_image_generation>。`;
+        }
+        delete settings.image.bizyair;
+        settings.version = 2;
+    }
     settings.memory.smallEvery = clampInteger(settings.memory.smallEvery, 1, 100000, 8);
     settings.memory.smallContextExtraFloors = clampInteger(settings.memory.smallContextExtraFloors, 0, 100000, 0);
     settings.memory.largeEvery = clampInteger(settings.memory.largeEvery, 1, 100000, 32);
@@ -41,22 +60,16 @@ function normalizeSettings(settings) {
     settings.status.injection.depth = clampInteger(settings.status.injection.depth, 0, 100, 4);
     settings.image.contextFloors = clampInteger(settings.image.contextFloors, 1, 1000, 2);
     settings.image.responseLength = clampInteger(settings.image.responseLength, 32, 32000, 900);
-    settings.image.maxImagesPerMessage = clampInteger(settings.image.maxImagesPerMessage, 1, 3, 3);
+    settings.image.maxImagesPerMessage = clampInteger(settings.image.maxImagesPerMessage, 1, 12, 3);
     settings.image.debugNotifications = Boolean(settings.image.debugNotifications);
-    settings.image.bizyair.webAppId = clampInteger(settings.image.bizyair.webAppId, 1, 1000000, 48570);
-    settings.image.bizyair.width = clampInteger(settings.image.bizyair.width, 64, 4096, 1024);
-    settings.image.bizyair.height = clampInteger(settings.image.bizyair.height, 64, 4096, 1024);
-    settings.image.bizyair.steps = clampInteger(settings.image.bizyair.steps, 1, 200, 10);
-    settings.image.bizyair.seed = clampInteger(settings.image.bizyair.seed, 1, Number.MAX_SAFE_INTEGER, 101);
-    settings.image.bizyair.pollIntervalMs = clampInteger(settings.image.bizyair.pollIntervalMs, 500, 30000, 1000);
-    settings.image.bizyair.maxPolls = clampInteger(settings.image.bizyair.maxPolls, 1, 300, 60);
-    settings.image.bizyair.concurrency = clampInteger(settings.image.bizyair.concurrency, 1, 8, 3);
-    settings.image.bizyair.templateLibrary.items ||= [];
-    if (!settings.image.bizyair.templateLibrary.items.length) {
-        settings.image.bizyair.templateLibrary.activeId = '';
-    } else if (!settings.image.bizyair.templateLibrary.items.some(item => item.id === settings.image.bizyair.templateLibrary.activeId)) {
-        settings.image.bizyair.templateLibrary.activeId = settings.image.bizyair.templateLibrary.items[0].id;
-    }
+    settings.image.cacheAsDataUrl = true;
+    settings.image.runpod.width = Math.round(clampInteger(settings.image.runpod.width, 512, 1536, 1024) / 64) * 64;
+    settings.image.runpod.height = Math.round(clampInteger(settings.image.runpod.height, 512, 1536, 1280) / 64) * 64;
+    settings.image.runpod.seed = clampInteger(settings.image.runpod.seed, 0, Number.MAX_SAFE_INTEGER, 101);
+    settings.image.runpod.pollIntervalMs = clampInteger(settings.image.runpod.pollIntervalMs, 500, 30000, 1000);
+    settings.image.runpod.maxPolls = clampInteger(settings.image.runpod.maxPolls, 1, 1800, 300);
+    settings.image.runpod.apiBase = String(settings.image.runpod.apiBase || 'https://api.runpod.ai/v2').replace(/\/+$/, '');
+    settings.image.runpod.endpointId = String(settings.image.runpod.endpointId || '').trim();
     return settings;
 }
 
@@ -333,11 +346,17 @@ export async function bootstrapExtension() {
     eventSource.on(event_types.MESSAGE_EDITED, () => {
         clearHistoryCache(storage.currentHandle());
         ui.ensureStatusPosition();
+        cancelPendingImageGeneration();
+        imagePipeline?.cancel();
+        imagePipeline?.clearRendered();
         schedule({ generateMemory: true, generateStatus: false, reason: 'message_edited' }, 500);
     });
     eventSource.on(event_types.MESSAGE_DELETED, () => {
         clearHistoryCache(storage.currentHandle());
         ui.ensureStatusPosition();
+        cancelPendingImageGeneration();
+        imagePipeline?.cancel();
+        imagePipeline?.clearRendered();
         schedule({ generateMemory: false, generateStatus: false, reason: 'message_deleted' }, 500);
     });
     eventSource.on(event_types.GENERATION_STARTED, async (type, _options, dryRun) => {

@@ -7,10 +7,8 @@ export const STATUS_TABLE = 'status-v1';
 export const IMAGE_TABLE = 'image-v1';
 export const CHAT_RUNTIME_KEY = 'runtime-v1';
 
-const DEFAULT_BIZYAIR_INPUT_VALUES_TEMPLATE = '{\n  "3:KSampler.seed": {{seed}},\n  "3:KSampler.steps": {{steps}},\n  "3:KSampler.cfg": {{cfg}},\n  "3:KSampler.sampler_name": "{{sampler}}",\n  "3:KSampler.scheduler": "{{scheduler}}",\n  "3:KSampler.denoise": {{denoise}},\n  "6:CLIPTextEncode.text": "{{positive_prompt}}",\n  "7:CLIPTextEncode.text": "{{negative_prompt}}",\n  "13:EmptySD3LatentImage.width": {{width}},\n  "13:EmptySD3LatentImage.height": {{height}},\n  "13:EmptySD3LatentImage.batch_size": 1\n}';
-
 export const DEFAULT_SETTINGS = {
-    version: 1,
+    version: 2,
     enabled: true,
     memory: {
         enabled: true,
@@ -161,7 +159,7 @@ export const DEFAULT_SETTINGS = {
                 title: '图片规划 · 系统约束',
                 enabled: true,
                 role: 'system',
-                content: '你是插图导演。你只负责从已编号的正文分片中选择适合插图的位置，并为每个位置写出 BizyAir 正面提示词。不要续写剧情，不要解释。必须输出 XML，不要输出 JSON。每张图使用一组 <image>...</image>，其中必须包含 <{{position_tag}}>分片序号</{{position_tag}}> 和 <{{prompt_tag}}>正面提示词</{{prompt_tag}}>。只写主体、动作、场景、构图、光影和角色外貌；固定质量词前缀与负面提示词由插件负责，不需要你重复。'
+                content: '你是插图导演。你只负责从已编号的正文分片中选择适合插图的位置，并为每个位置写出正面生图提示词。不要续写剧情，不要解释。必须输出 XML，不要输出 JSON。每张图使用一组 <image>...</image>，其中必须包含 <{{position_tag}}>分片序号</{{position_tag}}> 和 <{{prompt_tag}}>正面提示词</{{prompt_tag}}>。只写主体、动作、场景、构图、光影和角色外貌；固定质量词前缀由插件负责，不需要你重复。如果正文明显是报错、拒答、占位符、空洞的系统提示或其它不值得配图的无意义内容，只输出 <stop_image_generation>正文无有效配图内容</stop_image_generation>。'
             },
             {
                 id: 'image-plan-user',
@@ -171,52 +169,17 @@ export const DEFAULT_SETTINGS = {
                 content: '当前角色：{{character_name}}\n角色外貌提示词：\n{{character_prompt}}\n\n已按段落编号的正文：\n{{body_segments}}\n\n请最多选择 {{max_images}} 个分片。每张图输出：\n<image>\n<{{position_tag}}>分片序号</{{position_tag}}>\n<{{prompt_tag}}>英文或中英混合正面生图提示词</{{prompt_tag}}>\n</image>\n\n分片序号必须来自 <segment id="...">，不要使用原文锚点。生成正面提示词时应融合角色外貌提示词，保持同一角色外观一致。'
             }
         ],
-        bizyair: {
-            apiKeys: '',
-            webAppId: 48570,
-            suppressPreviewOutput: true,
+        runpod: {
+            apiKey: '',
+            apiBase: 'https://api.runpod.ai/v2',
+            endpointId: 's7bx1d50mv9zkj',
             width: 1024,
-            height: 1024,
-            steps: 10,
+            height: 1280,
             seed: 101,
             randomSeed: true,
-            cfg: 1,
-            sampler: 'euler',
-            scheduler: 'simple',
-            denoise: 1,
             positivePromptPrefix: '',
-            negativePrompt: 'low quality, blurry, bad anatomy, extra fingers, watermark, text',
             pollIntervalMs: 1000,
-            maxPolls: 60,
-            concurrency: 3,
-            inputValuesTemplate: DEFAULT_BIZYAIR_INPUT_VALUES_TEMPLATE,
-            templateLibrary: {
-                activeId: 'default-zimage',
-                importName: '',
-                exampleCode: '',
-                items: [
-                    {
-                        id: 'default-zimage',
-                        name: '默认 zimage',
-                        webAppId: 48570,
-                        suppressPreviewOutput: true,
-                        inputValuesTemplate: DEFAULT_BIZYAIR_INPUT_VALUES_TEMPLATE,
-                        controls: {
-                            width: 1024,
-                            height: 1024,
-                            steps: 10,
-                            seed: 101,
-                            randomSeed: true,
-                            cfg: 1,
-                            sampler: 'euler',
-                            scheduler: 'simple',
-                            denoise: 1,
-                            positivePromptPrefix: '',
-                            negativePrompt: 'low quality, blurry, bad anatomy, extra fingers, watermark, text'
-                        }
-                    }
-                ]
-            }
+            maxPolls: 300
         }
     }
 };

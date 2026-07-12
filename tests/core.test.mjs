@@ -6,7 +6,7 @@ import {
     applyRegexRules,
     boundaries,
     buildSnapshot,
-    parseBizyAirApiExample,
+    imagePlanRequestsStop,
     parseImagePlan,
     processStatusOutput,
     promptEntriesUseMacros,
@@ -321,6 +321,18 @@ test('image planning output parses XML insertion slots', () => {
 test('image planning output reports missing xml tags clearly', () => {
     assert.throws(() => parseImagePlan('not json'), /图片规划输出没有找到 XML 标签/);
 });
+test('image planning model can stop expensive generation for invalid body text', () => {
+    const output = '<stop_image_generation>正文是错误提示，不值得配图</stop_image_generation>';
+    assert.equal(imagePlanRequestsStop(output), true);
+    assert.deepEqual(parseImagePlan(output, { maxItems: 12 }), []);
+});
+
+test('image planning hard limit supports at most twelve items', () => {
+    const output = Array.from({ length: 15 }, (_, index) => (
+        `<image><position>${index + 1}</position><positive_prompt>prompt ${index + 1}</positive_prompt></image>`
+    )).join('');
+    assert.equal(parseImagePlan(output, { maxItems: 99 }).length, 12);
+});
 
 test('character prompt info follows the active character ref', () => {
     const info = characterPromptInfo({
@@ -336,102 +348,4 @@ test('character prompt info follows the active character ref', () => {
         characterId: 'alice-001',
         fileName: 'Alice.png'
     });
-});
-
-test('bizyair api example parses into a reusable template', () => {
-    const parsed = parseBizyAirApiExample(`
-        const response = await fetch('https://api.bizyair.cn/w/v1/webapp/task/openapi/create', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer YOUR_API_KEY'
-          },
-          body: JSON.stringify({
-              "web_app_id": 51978,
-              "suppress_preview_output": true,
-              "input_values": {
-                "3:KSampler.seed": 95663262248077,
-                "3:KSampler.steps": 26,
-                "5:EmptyLatentImage.width": 1280,
-                "5:EmptyLatentImage.height": 1560,
-                "6:CLIPTextEncode.text": "masterpiece, very aesthetic, best quality, 8k, (Anime-art:1), amazing quality, very awa, sharp eyes, absurdres, newest, high detail, 3d, realstic, artist:mikaze_oto, [artist:kedama milk],[artist:ask_(askzy)],artist:wanke,artist:wlop,",
-                "7:CLIPTextEncode.text": "(worst quality:1.4), muscular woman, deformed, distorted, disfigured, bad anatomy, missing legs, extra legs, extra limbs, cloned face, low resolution, low quality, jpeg artifacts, (watermark, signature, text:1.5), error, ugly, bad proportions, bad face, unrealistic, mutated, cross-eye, (fused eyes:1.3), blurred eyes, poorly drawn face,obese, Chubby, curvy, over weight, overweight, sweat,"
-              }
-            })
-        });
-    `);
-    assert.equal(parsed.webAppId, 51978);
-    assert.equal(parsed.suppressPreviewOutput, true);
-    assert.equal(parsed.controls.seed, 95663262248077);
-    assert.equal(parsed.controls.steps, 26);
-    assert.equal(parsed.controls.width, 1280);
-    assert.equal(parsed.controls.height, 1560);
-    assert.equal(parsed.controls.randomSeed, false);
-    assert.match(parsed.controls.positivePromptPrefix, /masterpiece/);
-    assert.match(parsed.controls.positivePromptPrefix, /artist:wanke/);
-    assert.match(parsed.controls.negativePrompt, /worst quality/);
-    assert.match(parsed.controls.negativePrompt, /text:1\.5/);
-    assert.match(parsed.inputValuesTemplate, /"3:KSampler.seed": {{seed}}/);
-    assert.match(parsed.inputValuesTemplate, /"5:EmptyLatentImage.width": {{width}}/);
-    assert.match(parsed.inputValuesTemplate, /"6:CLIPTextEncode.text": "{{positive_prompt}}"/);
-    assert.match(parsed.inputValuesTemplate, /"7:CLIPTextEncode.text": "{{negative_prompt}}"/);
-    assert.doesNotMatch(parsed.inputValuesTemplate, /{{cfg}}/);
-});
-
-test('bizyair api example resolves native js body variables', () => {
-    const parsed = parseBizyAirApiExample(`
-        const payload = {
-            web_app_id: 52001,
-            suppress_preview_output: false,
-            inputValues: {
-                "3:KSampler.seed": 123456,
-                "3:KSampler.cfg": 7,
-                "5:EmptyLatentImage.width": 832,
-                "5:EmptyLatentImage.height": 1216,
-                "6:CLIPTextEncode.text": "cinematic light, detailed eyes",
-                "7:CLIPTextEncode.text": "worst quality, watermark"
-            }
-        };
-
-        const response = await fetch("https://api.bizyair.cn/w/v1/webapp/task/openapi/create", {
-            method: "POST",
-            headers: myHeaders,
-            body: JSON.stringify(payload)
-        });
-    `);
-
-    assert.equal(parsed.webAppId, 52001);
-    assert.equal(parsed.suppressPreviewOutput, false);
-    assert.equal(parsed.controls.cfg, 7);
-    assert.match(parsed.inputValuesTemplate, /"3:KSampler.cfg": {{cfg}}/);
-    assert.match(parsed.inputValuesTemplate, /"6:CLIPTextEncode.text": "{{positive_prompt}}"/);
-});
-
-test('bizyair api example resolves raw requestOptions body variables', () => {
-    const parsed = parseBizyAirApiExample(`
-        const payload = {
-            "web_app_id": 51978,
-            "input_values": {
-                "3:KSampler.seed": 95663262248077,
-                "3:KSampler.steps": 26,
-                "5:EmptyLatentImage.width": 1280,
-                "5:EmptyLatentImage.height": 1560,
-                "6:CLIPTextEncode.text": "masterpiece, best quality",
-                "7:CLIPTextEncode.text": "bad anatomy, watermark"
-            }
-        };
-        const raw = JSON.stringify(payload);
-        const requestOptions = {
-            method: "POST",
-            headers: myHeaders,
-            body: raw,
-            redirect: "follow"
-        };
-        fetch("https://api.bizyair.cn/w/v1/webapp/task/openapi/create", requestOptions);
-    `);
-
-    assert.equal(parsed.webAppId, 51978);
-    assert.equal(parsed.controls.steps, 26);
-    assert.equal(parsed.controls.width, 1280);
-    assert.match(parsed.controls.negativePrompt, /bad anatomy/);
 });

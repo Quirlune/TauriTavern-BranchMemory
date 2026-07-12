@@ -354,12 +354,13 @@ function xmlTagValues(source, tagName) {
 export function parseImagePlan(rawOutput, { maxItems = 3, positionTag = 'position', promptTag = 'positive_prompt' } = {}) {
     const source = String(rawOutput ?? '').trim();
     if (!source) return [];
+    if (imagePlanRequestsStop(source)) return [];
 
     const resolvedPositionTag = cleanXmlTagName(positionTag, 'position');
     const resolvedPromptTag = cleanXmlTagName(promptTag, 'positive_prompt');
     const positions = xmlTagValues(source, resolvedPositionTag);
     const prompts = xmlTagValues(source, resolvedPromptTag);
-    const limit = Math.max(1, Math.min(6, Math.floor(Number(maxItems) || 3)));
+    const limit = Math.max(1, Math.min(12, Math.floor(Number(maxItems) || 3)));
     const count = Math.min(positions.length, prompts.length, limit);
 
     if (!count) {
@@ -381,6 +382,16 @@ export function parseImagePlan(rawOutput, { maxItems = 3, positionTag = 'positio
         });
     }
     return items;
+}
+
+export function imagePlanRequestsStop(rawOutput) {
+    const source = String(rawOutput ?? '').trim();
+    if (!source) return false;
+    const values = [
+        ...xmlTagValues(source, 'stop_image_generation'),
+        ...xmlTagValues(source, 'stop')
+    ];
+    return values.some(value => /^(?:1|true|yes|stop|skip|停止|跳过)$/i.test(value.trim()) || value.trim().length > 0);
 }
 
 function extractJsonLike(text) {
@@ -797,39 +808,6 @@ function renderInputValuesTemplate(inputValues, controls) {
     });
     lines.push('}');
     return lines.join('\n');
-}
-
-export function parseBizyAirApiExample(source) {
-    const block = extractJsonStringifyObject(source);
-    if (!block) throw new Error('没有找到 JSON.stringify(...) 中的 BizyAir 请求 body。');
-
-    let body;
-    try {
-        body = parseJsObjectLiteral(block);
-    } catch (error) {
-        throw new Error(`API 示例代码里的请求 body 解析失败：${error.message}`);
-    }
-
-    const inputValues = body?.input_values ?? body?.inputValues;
-    if (!isPlainObject(inputValues)) {
-        throw new Error('API 示例代码里没有找到 input_values 对象。');
-    }
-
-    const controls = {};
-    const webAppId = Number(body.web_app_id ?? body.webAppId);
-    const suppressPreviewOutput = typeof body.suppress_preview_output === 'boolean'
-        ? body.suppress_preview_output
-        : typeof body.suppressPreviewOutput === 'boolean'
-            ? body.suppressPreviewOutput
-            : true;
-
-    return {
-        webAppId: Number.isFinite(webAppId) ? webAppId : null,
-        suppressPreviewOutput,
-        inputValuesTemplate: renderInputValuesTemplate(inputValues, controls),
-        controls,
-        fixedKeys: Object.keys(inputValues).filter(key => !inputValueMacro(key, inputValues[key], {}))
-    };
 }
 
 export function renderTemplate(template, values) {

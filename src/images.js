@@ -2,11 +2,11 @@ import {
     applyRegexRules,
     getFloor,
     hashString,
+    imagePlanRequestsStop,
     makeCacheKey,
     parseImagePlan,
     promptEntriesToMessages,
     recipeHash,
-    renderTemplate,
     roleOf,
     segmentImageSource,
     statusRecordOutputs,
@@ -15,10 +15,16 @@ import {
 import { characterPromptInfo, chatIdentity, locateLatestAssistantMessage, readFullHistory, scopeHashForRef } from './history.js';
 
 const IMAGE_GENERATION_REASONS = new Set(['assistant_output', 'manual']);
-const IMAGE_CACHE_RETENTION_DAYS = 70;
+const IMAGE_CACHE_RETENTION_DAYS = 90;
 const IMAGE_CACHE_RETENTION_MS = IMAGE_CACHE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+const IMAGE_HARD_LIMIT = 12;
+const IMAGE_CONFIRMATION_THRESHOLD = 5;
 const TARGET_STABLE_WAITS_MS = [140, 620, 320, 320];
 const TARGET_STABLE_WAITS_MANUAL_MS = [100, 260, 500, 320];
+
+export function imageGenerationNeedsConfirmation(count) {
+    return Math.floor(Number(count) || 0) >= IMAGE_CONFIRMATION_THRESHOLD;
+}
 
 function latestAssistantRow(snapshot) {
     for (let index = snapshot.rows.length - 1; index >= 0; index -= 1) {
@@ -75,20 +81,9 @@ function characterPromptRecord(settings, info) {
     };
 }
 
-function normalizeList(value) {
-    return String(value || '')
-        .split(/[\s,，]+/)
-        .map(item => item.trim())
-        .filter(Boolean);
-}
-
 function asNumber(value, fallback) {
     const number = Number(value);
     return Number.isFinite(number) ? number : fallback;
-}
-
-function jsonStringContent(value) {
-    return JSON.stringify(String(value ?? '')).slice(1, -1);
 }
 
 function randomSeed() {
@@ -117,18 +112,12 @@ function joinPositivePrompt(prefix, prompt) {
     return `${fixed}${/[，,;；]$/.test(fixed) ? ' ' : ', '}${dynamic}`;
 }
 
-function getFinalImage(outputs) {
-    if (!Array.isArray(outputs) || !outputs.length) return '';
-    const output = [...outputs].reverse().find(item => item?.object_url || item?.url || item?.image_url) || outputs.at(-1);
-    return String(output?.object_url || output?.url || output?.image_url || '');
-}
-
 function delay(ms, signal) {
     return new Promise((resolve, reject) => {
         const timer = setTimeout(resolve, ms);
         signal?.addEventListener?.('abort', () => {
             clearTimeout(timer);
-            reject(signal.reason || new Error('BizyAir request aborted'));
+            reject(signal.reason || new Error('RunPod request aborted'));
         }, { once: true });
     });
 }
@@ -389,7 +378,7 @@ function openImageViewer(item) {
     const state = ensureImageViewer();
     resetViewerTransform(state);
     state.image.src = item.imageUrl;
-    state.image.alt = item.prompt || 'BizyAir image';
+    state.image.alt = item.prompt || 'generated image';
     state.prompt.value = viewerPromptText(item) || '没有记录提示词。';
     state.viewer.hidden = false;
     state.viewer.focus?.();
@@ -418,54 +407,6 @@ function escapeAttribute(value) {
         .replaceAll('"', '&quot;')
         .replaceAll('<', '&lt;')
         .replaceAll('>', '&gt;');
-}
-
-async function blobToDataUrl(blob) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result);
-        reader.onerror = () => reject(reader.error || new Error('读取图片失败'));
-        reader.readAsDataURL(blob);
-    });
-}
-
-async function cacheImageUrl(url, enabled, signal, settings, label = '图片') {
-    if (!enabled) {
-        notifyImageDebug(settings, `${label} data URL 缓存关闭，保留远程 URL`);
-        return String(url);
-    }
-    if (String(url).startsWith('data:')) {
-        notifyImageDebug(settings, `${label} 已是 data URL，跳过下载缓存`);
-        return String(url);
-    }
-    notifyImageDebug(settings, `${label} 开始下载缓存`);
-    try {
-        const response = await fetch(url, { mode: 'cors', signal });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const dataUrl = await blobToDataUrl(await response.blob());
-        notifyImageDebug(settings, `${label} 已缓存为 data URL`, 'success');
-        return dataUrl;
-    } catch (error) {
-        if (signal?.aborted) throw signal.reason || error;
-        console.warn('[BranchMemory] BizyAir image cache fallback to remote URL', error);
-        notifyImageDebug(settings, `${label} 缓存失败，保留远程 URL：${error.message || error}`, 'warning');
-        return String(url);
-    }
-}
-
-async function mapConcurrent(items, concurrency, mapper, signal) {
-    const output = new Array(items.length);
-    let nextIndex = 0;
-    const workerCount = Math.min(items.length, Math.max(1, Math.floor(Number(concurrency) || 1)));
-    const workers = Array.from({ length: workerCount }, async () => {
-        while (!signal?.aborted && nextIndex < items.length) {
-            const index = nextIndex;
-            nextIndex += 1;
-            output[index] = await mapper(items[index], index);
-        }
-    });
-    await Promise.all(workers);
-    return output.filter(Boolean);
 }
 
 function textNodeWalker(root) {
@@ -620,7 +561,7 @@ function renderImageItem(record, item) {
     wrapper.ttbmImageItem = item;
     wrapper.innerHTML = `
         <button class="ttbm-image-open" type="button" data-ttbm-image-open aria-label="查看大图">
-            <img class="ttbm-image-element" src="${escapeAttribute(item.imageUrl)}" alt="${escapeAttribute(item.prompt || 'BizyAir image')}" loading="lazy">
+            <img class="ttbm-image-element" src="${escapeAttribute(item.imageUrl)}" alt="${escapeAttribute(item.prompt || 'generated image')}" loading="lazy">
         </button>
     `;
     return true;
@@ -631,116 +572,132 @@ function renderImageRecord(record) {
     for (const item of record.items) renderImageItem(record, item);
 }
 
-export class BizyAirClient {
+export class RunPodClient {
     constructor(settingsProvider) {
         this.settingsProvider = settingsProvider;
     }
 
-    async generate(prompt, signal, { label = '图片' } = {}) {
+    #config() {
         const settings = this.settingsProvider();
-        const image = settings.image;
-        const keys = normalizeList(image.bizyair.apiKeys);
-        const apiKey = keys[0] || '';
+        const runpod = settings.image?.runpod || {};
+        const apiKey = String(runpod.apiKey || '').trim();
         if (!apiKey) {
-            notifyImageDebug(settings, `${label} 缺少 BizyAir API Key`, 'error');
-            throw new Error('图片模块尚未填写 BizyAir API Key。');
+            throw new Error('图片模块尚未填写 RunPod API Key。');
         }
-
-        const seed = image.bizyair.randomSeed ? randomSeed() : asNumber(image.bizyair.seed, 101);
-        notifyImageDebug(settings, `${label} 准备 BizyAir create，seed=${seed}`);
-        const positivePrompt = joinPositivePrompt(image.bizyair.positivePromptPrefix, prompt);
-        const values = {
-            prompt: jsonStringContent(positivePrompt),
-            positive_prompt: jsonStringContent(positivePrompt),
-            ai_prompt: jsonStringContent(prompt),
-            positive_prompt_prefix: jsonStringContent(image.bizyair.positivePromptPrefix || ''),
-            negative_prompt: jsonStringContent(image.bizyair.negativePrompt || ''),
-            seed,
-            width: asNumber(image.bizyair.width, 1024),
-            height: asNumber(image.bizyair.height, 1024),
-            steps: asNumber(image.bizyair.steps, 10),
-            cfg: asNumber(image.bizyair.cfg, 1),
-            sampler: jsonStringContent(image.bizyair.sampler || 'euler'),
-            scheduler: jsonStringContent(image.bizyair.scheduler || 'simple'),
-            denoise: asNumber(image.bizyair.denoise, 1)
+        const endpointId = String(runpod.endpointId || '').trim();
+        if (!endpointId) throw new Error('图片模块尚未填写 RunPod Endpoint ID。');
+        const width = asNumber(runpod.width, 1024);
+        const height = asNumber(runpod.height, 1280);
+        if (![width, height].every(value => value >= 512 && value <= 1536 && value % 64 === 0)) {
+            throw new Error('RunPod 图片宽高必须在 512-1536 之间，并且是 64 的倍数。');
+        }
+        return {
+            settings,
+            apiKey,
+            endpointUrl: `${String(runpod.apiBase || 'https://api.runpod.ai/v2').replace(/\/+$/, '')}/${encodeURIComponent(endpointId)}`,
+            width,
+            height,
+            seed: asNumber(runpod.seed, 101),
+            randomSeed: runpod.randomSeed !== false,
+            positivePromptPrefix: String(runpod.positivePromptPrefix || ''),
+            intervalMs: Math.max(500, Math.floor(Number(runpod.pollIntervalMs) || 1000)),
+            maxPolls: Math.max(1, Math.floor(Number(runpod.maxPolls) || 300))
         };
-        let inputValues;
-        try {
-            inputValues = JSON.parse(renderTemplate(image.bizyair.inputValuesTemplate, values));
-        } catch (error) {
-            notifyImageDebug(settings, `${label} input_values 模板渲染失败：${error.message}`, 'error');
-            throw error;
-        }
-        notifyImageDebug(settings, `${label} 提交 BizyAir create，Web App ID=${asNumber(image.bizyair.webAppId, 48570)}`);
-        const createResponse = await fetch('https://api.bizyair.cn/w/v1/webapp/task/openapi/create', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`
-            },
-            signal,
-            body: JSON.stringify({
-                web_app_id: asNumber(image.bizyair.webAppId, 48570),
-                suppress_preview_output: image.bizyair.suppressPreviewOutput !== false,
-                input_values: inputValues
-            })
-        });
-        const createResult = await createResponse.json();
-        if (!createResponse.ok) {
-            notifyImageDebug(settings, `${label} BizyAir create 失败：${createResult.message || createResult.error || createResponse.status}`, 'error');
-            throw new Error(createResult.message || createResult.error || 'BizyAir 创建任务失败。');
-        }
-
-        const immediate = getFinalImage(createResult.outputs);
-        if (immediate) {
-            notifyImageDebug(settings, `${label} BizyAir create 直接返回图片`, 'success');
-            return immediate;
-        }
-        const taskId = createResult.request_id || createResult.task_id;
-        if (!taskId) {
-            notifyImageDebug(settings, `${label} BizyAir 未返回图片或任务 ID`, 'error');
-            throw new Error('BizyAir 未返回图片或任务 ID。');
-        }
-        notifyImageDebug(settings, `${label} BizyAir task=${taskId}，开始轮询`);
-        return this.#poll(taskId, apiKey, signal, { label });
     }
 
-    async #poll(taskId, apiKey, signal, { label = '图片' } = {}) {
-        const settings = this.settingsProvider();
-        const image = settings.image;
-        const maxPolls = Math.max(1, Math.floor(Number(image.bizyair.maxPolls) || 60));
-        const intervalMs = Math.max(500, Math.floor(Number(image.bizyair.pollIntervalMs) || 1000));
-        for (let index = 0; index < maxPolls; index += 1) {
-            if (index > 0) {
-                notifyImageDebug(settings, `${label} 等待轮询 ${index + 1}/${maxPolls}，${intervalMs}ms`);
-                await delay(intervalMs, signal);
-            } else {
-                notifyImageDebug(settings, `${label} 立即轮询 1/${maxPolls}`);
+    async #request(url, options, signal) {
+        const response = await fetch(url, { ...options, signal });
+        let result;
+        try {
+            result = await response.json();
+        } catch {
+            result = {};
+        }
+        if (!response.ok) {
+            throw new Error(result.error || result.message || `RunPod HTTP ${response.status}`);
+        }
+        return result;
+    }
+
+    #imageDataUrl(result) {
+        const image = result?.output?.images?.[0];
+        const data = String(image?.data || '').trim();
+        if (!data) throw new Error('RunPod 任务完成，但没有返回 output.images[0].data。');
+        if (data.startsWith('data:image/')) return data;
+        const filename = String(image?.filename || '').toLowerCase();
+        const mime = filename.endsWith('.jpg') || filename.endsWith('.jpeg') ? 'image/jpeg' : 'image/png';
+        return `data:${mime};base64,${data}`;
+    }
+
+    async #cancelJobs(jobs, config) {
+        await Promise.allSettled(jobs
+            .filter(job => job.id && !job.done)
+            .map(job => fetch(`${config.endpointUrl}/cancel/${encodeURIComponent(job.id)}`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${config.apiKey}` }
+            })));
+    }
+
+    async generateBatch(prompts, signal) {
+        const requests = Array.isArray(prompts) ? prompts : [];
+        if (!requests.length) return [];
+        if (requests.length > IMAGE_HARD_LIMIT) {
+            throw new Error(`单条消息最多允许生成 ${IMAGE_HARD_LIMIT} 张图片。`);
+        }
+        const config = this.#config();
+        const headers = {
+            'Authorization': `Bearer ${config.apiKey}`,
+            'Content-Type': 'application/json'
+        };
+        const jobs = [];
+        const cancelRemote = () => { void this.#cancelJobs(jobs, config); };
+        signal?.addEventListener?.('abort', cancelRemote, { once: true });
+
+        try {
+            for (let index = 0; index < requests.length; index += 1) {
+                if (signal?.aborted) throw signal.reason || new Error('RunPod request aborted');
+                const positivePrompt = joinPositivePrompt(config.positivePromptPrefix, requests[index]);
+                if (!positivePrompt || positivePrompt.length > 10000) {
+                    throw new Error('RunPod positive_prompt 必须为 1-10000 个字符。');
+                }
+                const seed = config.randomSeed ? randomSeed() : config.seed;
+                notifyImageDebug(config.settings, `图片 ${index + 1}/${requests.length} 提交 RunPod 队列，seed=${seed}`);
+                const result = await this.#request(`${config.endpointUrl}/run`, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({ input: { positive_prompt: positivePrompt, width: config.width, height: config.height, seed } })
+                }, signal);
+                const id = String(result.id || '').trim();
+                if (!id) throw new Error('RunPod /run 未返回任务 ID。');
+                jobs.push({ id, done: false, result: null, positivePrompt });
             }
-            const response = await fetch(`https://api.bizyair.cn/w/v1/webapp/task/openapi/query?task_id=${encodeURIComponent(taskId)}`, {
-                headers: { 'Authorization': `Bearer ${apiKey}` },
-                signal
-            });
-            const result = await response.json();
-            if (!response.ok) {
-                notifyImageDebug(settings, `${label} BizyAir query 失败：${result.message || result.error || response.status}`, 'error');
-                throw new Error(result.message || result.error || 'BizyAir 查询任务失败。');
-            }
-            notifyImageDebug(settings, `${label} BizyAir 状态：${result.status || 'unknown'}`);
-            if (String(result.status || '').toLowerCase() === 'success') {
-                const imageUrl = getFinalImage(result.outputs);
-                if (imageUrl) {
-                    notifyImageDebug(settings, `${label} BizyAir 生成成功`, 'success');
-                    return imageUrl;
+
+            notifyImageDebug(config.settings, `${jobs.length} 个 RunPod 任务已连续入队，开始统一轮询`, 'success');
+            for (let round = 0; round < config.maxPolls && jobs.some(job => !job.done); round += 1) {
+                if (round > 0) await delay(config.intervalMs, signal);
+                for (const job of jobs) {
+                    if (job.done) continue;
+                    const result = await this.#request(`${config.endpointUrl}/status/${encodeURIComponent(job.id)}`, {
+                        headers: { 'Authorization': `Bearer ${config.apiKey}` }
+                    }, signal);
+                    const status = String(result.status || '').toUpperCase();
+                    if (status === 'COMPLETED') {
+                        job.result = this.#imageDataUrl(result);
+                        job.done = true;
+                    } else if (['FAILED', 'CANCELLED', 'TIMED_OUT'].includes(status)) {
+                        throw new Error(result.error || `RunPod 任务 ${job.id} ${status}。`);
+                    }
                 }
             }
-            if (String(result.status || '').toLowerCase() === 'failed') {
-                notifyImageDebug(settings, `${label} BizyAir 生成失败：${result.error || result.message || 'failed'}`, 'error');
-                throw new Error(result.error || result.message || 'BizyAir 生成失败。');
-            }
+
+            if (jobs.some(job => !job.done)) throw new Error('RunPod 等待图片生成超时。');
+            return jobs.map(job => ({ imageUrl: job.result, generationPrompt: job.positivePrompt, jobId: job.id }));
+        } catch (error) {
+            await this.#cancelJobs(jobs, config);
+            throw error;
+        } finally {
+            signal?.removeEventListener?.('abort', cancelRemote);
         }
-        notifyImageDebug(settings, `${label} BizyAir 等待图片生成超时`, 'error');
-        throw new Error('BizyAir 等待图片生成超时。');
     }
 }
 
@@ -751,7 +708,7 @@ export class ImagePipeline {
         this.generate = generate;
         this.onError = onError;
         this.updateStats = updateStats;
-        this.client = new BizyAirClient(getSettings);
+        this.client = new RunPodClient(getSettings);
         this.activeJobs = new Map();
         this.renderQueue = Promise.resolve();
         this.renderVersion = 0;
@@ -897,7 +854,7 @@ export class ImagePipeline {
             ? { rawContent: null, renderContent: '', injectionContent: '' }
             : statusRecordOutputs(runtime.status, settings.status || {});
         const recipe = recipeHash({
-            version: 3,
+            version: 4,
             api: settings.image.api,
             promptEntries: settings.image.promptEntries,
             inputRegex: settings.image.inputRegex,
@@ -912,12 +869,12 @@ export class ImagePipeline {
                 key: character.key,
                 prompt: character.prompt
             },
-            bizyair: {
-                webAppId: settings.image.bizyair.webAppId,
-                suppressPreviewOutput: settings.image.bizyair.suppressPreviewOutput,
-                inputValuesTemplate: settings.image.bizyair.inputValuesTemplate,
-                positivePromptPrefix: settings.image.bizyair.positivePromptPrefix,
-                negativePrompt: settings.image.bizyair.negativePrompt
+            runpod: {
+                apiBase: settings.image.runpod.apiBase,
+                endpointId: settings.image.runpod.endpointId,
+                width: settings.image.runpod.width,
+                height: settings.image.runpod.height,
+                positivePromptPrefix: settings.image.runpod.positivePromptPrefix
             }
         });
         return { settings, handle, ref, identity, scopeHash, snapshot, character, statusOutputs, recipe };
@@ -1139,68 +1096,56 @@ export class ImagePipeline {
         }
         notifyImageDebug(settings, `图片规划模型返回：${String(rawPlan || '').length} 字符`);
         const planText = String(rawPlan || '').trim();
+        if (imagePlanRequestsStop(planText)) {
+            notifyImageDebug(settings, '图片规划模型判定正文错误或无意义，停止本次生图', 'warning');
+            notifyImageProgress(settings, '规划模型已停止无意义生图', 'warning');
+            return;
+        }
         const plan = parseImagePlan(planText, { maxItems: settings.image.maxImagesPerMessage, positionTag, promptTag })
             .filter(item => item.segmentIndex >= 1 && item.segmentIndex <= segmentedSource.segments.length);
         if (!plan.length) {
-            notifyImageDebug(settings, '图片规划解析后没有有效项目，跳过 BizyAir', 'warning');
+            notifyImageDebug(settings, '图片规划解析后没有有效项目，跳过 RunPod', 'warning');
             return;
         }
 
         const signal = controller.signal;
-        let items = [];
-        const concurrency = Math.min(plan.length, Math.max(1, Math.floor(Number(settings.image.bizyair.concurrency) || 3)));
-        notifyImageDebug(settings, `开始 BizyAir 批量生成：${plan.length} 张，并发=${concurrency}`);
-        notifyImageProgress(settings, '正在生成图片');
-        items = await mapConcurrent(plan, concurrency, async (item, index) => {
-            const label = `图片 ${index + 1}/${plan.length}（分片 ${item.segmentIndex}）`;
-            const segment = segmentedSource.segments[item.segmentIndex - 1];
-            if (!segment) {
-                notifyImageDebug(settings, `${label} 找不到对应分片，跳过`, 'warning');
-                return null;
+        if (imageGenerationNeedsConfirmation(plan.length)) {
+            const message = `本次将调用昂贵的生图 API 生成 ${plan.length} 张图片。\n\n确认后会立即把全部任务提交到 RunPod 队列。是否继续？`;
+            const confirmed = typeof globalThis.confirm === 'function' && globalThis.confirm(message);
+            if (!confirmed) {
+                notifyImageDebug(settings, `用户拒绝 ${plan.length} 张高费用生图`, 'warning');
+                notifyImageProgress(settings, '已取消高费用生图', 'warning');
+                return;
             }
-            const slotId = hashString(`${key}:${item.id}:${item.segmentIndex}:${item.prompt}`);
-            try {
-                notifyImageDebug(settings, `${label} 开始生成`);
-                const generationPrompt = joinPositivePrompt(settings.image.bizyair.positivePromptPrefix, item.prompt);
-                const negativePrompt = String(settings.image.bizyair.negativePrompt || '').trim();
-                const remoteUrl = await this.client.generate(item.prompt, signal, { label });
-                notifyImageDebug(settings, `${label} 获得远程图片 URL`, 'success');
-                const previewItem = {
-                    ...item,
-                    id: slotId,
-                    segmentText: segment.text,
-                    segmentOccurrence: segment.occurrence,
-                    contentWrapped: segmentedSource.contentWrapped,
-                    isLastSegment: item.segmentIndex === segmentedSource.segments.length,
-                    generationPrompt,
-                    negativePrompt,
-                    remoteUrl,
-                    imageUrl: remoteUrl,
-                    createdAt: new Date().toISOString()
-                };
-                if (await this.#targetStillCurrentFast(target)) {
-                    renderImageRecord({ key, messageIndex: row.index, items: [previewItem] });
-                    notifyImageDebug(settings, `${label} 已先插入远程图片`, 'success');
-                }
-                const imageUrl = await cacheImageUrl(remoteUrl, settings.image.cacheAsDataUrl !== false, signal, settings, label);
-                notifyImageDebug(settings, `${label} 生成流程完成`, 'success');
-                return {
-                    ...previewItem,
-                    imageUrl,
-                    cachedAt: new Date().toISOString()
-                };
-            } catch (error) {
-                notifyImageDebug(settings, `${label} 失败：${error.message || error}`, 'error');
-                controller.abort(error);
-                throw error;
-            }
-        }, signal);
-        if (!items.length) {
-            notifyImageDebug(settings, 'BizyAir 没有返回可保存图片，跳过写入缓存', 'warning');
-            return;
+            this.#throwIfCancelled(requestVersion);
+            if (!await this.#targetStillCurrentFast(target)) return;
         }
+
         this.#throwIfCancelled(requestVersion);
-        if (!await this.#targetStillCurrent(target)) {
+        if (!await this.#targetStillCurrentFast(target)) return;
+        notifyImageDebug(settings, `开始 RunPod 批量入队：${plan.length} 张`);
+        notifyImageProgress(settings, '正在生成图片');
+        const batchResults = await this.client.generateBatch(plan.map(item => item.prompt), signal);
+        const items = plan.map((item, index) => {
+            const segment = segmentedSource.segments[item.segmentIndex - 1];
+            const generated = batchResults[index];
+            const slotId = hashString(`${key}:${item.id}:${item.segmentIndex}:${item.prompt}`);
+            return {
+                ...item,
+                id: slotId,
+                segmentText: segment.text,
+                segmentOccurrence: segment.occurrence,
+                contentWrapped: segmentedSource.contentWrapped,
+                isLastSegment: item.segmentIndex === segmentedSource.segments.length,
+                generationPrompt: generated.generationPrompt,
+                runpodJobId: generated.jobId,
+                imageUrl: generated.imageUrl,
+                createdAt: new Date().toISOString(),
+                cachedAt: new Date().toISOString()
+            };
+        });
+        if (!items.length) {
+            notifyImageDebug(settings, 'RunPod 没有返回可保存图片，跳过写入缓存', 'warning');
             return;
         }
 
@@ -1221,9 +1166,14 @@ export class ImagePipeline {
             reason
         };
         await this.storage.setImage(key, record);
-        notifyImageDebug(settings, `图片记录已保存：第 ${row.floor} 楼，${items.length} 张`, 'success');
-        renderImageRecord(record);
-        notifyImageDebug(settings, '图片已插回聊天正文', 'success');
+        notifyImageDebug(settings, `图片记录已在本地保存 90 天：第 ${row.floor} 楼，${items.length} 张`, 'success');
+        const stillCurrent = requestVersion === this.cancelVersion && await this.#targetStillCurrent(target);
+        if (stillCurrent) {
+            renderImageRecord(record);
+            notifyImageDebug(settings, '图片已插回聊天正文', 'success');
+        } else {
+            notifyImageDebug(settings, '消息已不在前台分支；图片仅保存到对应分支缓存，不插入当前界面', 'warning');
+        }
         notifyImageProgress(settings, '完成图像生成', 'success');
         this.updateStats({ lastImageAt: record.createdAt, imageCount: items.length, imageFloor: row.floor });
     }
