@@ -7,6 +7,7 @@ import {
     generateRaw,
     saveChatConditional,
     setExtensionPrompt,
+    syncMesToSwipe,
     updateMessageBlock
 } from '/script.js';
 import { ConnectionManagerRequestService } from '/scripts/extensions/shared.js';
@@ -312,12 +313,16 @@ export async function bootstrapExtension() {
                 message.extra ||= {};
                 message.extra.display_text = String(displayText ?? '');
             }
+            // Persist the XML marker in the active swipe as well as `mes` so
+            // switching away and back cannot resurrect an unanchored copy.
+            syncMesToSwipe(localIndex);
             updateMessageBlock(localIndex, message);
             try {
                 await saveChatConditional();
             } catch (error) {
                 message.mes = previousText;
                 if (usesDisplayText) message.extra.display_text = previousDisplayText;
+                syncMesToSwipe(localIndex);
                 updateMessageBlock(localIndex, message);
                 throw error;
             }

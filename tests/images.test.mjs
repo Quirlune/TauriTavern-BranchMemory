@@ -7,6 +7,7 @@ import {
     imageCachePrefix,
     imageDisplayTextWithAnchors,
     imageGenerationNeedsConfirmation,
+    imageItemsBackedByHistory,
     imageMessageCachePrefix,
     imageMessageIdentity,
     insertImageAnchorTags,
@@ -56,6 +57,15 @@ test('image XML anchors are persisted at planned segments and can be stripped fo
     assert.equal(stripImageAnchorTags(anchored), source);
 });
 
+test('only cache items whose XML marker still exists in message history are renderable', () => {
+    const historyText = 'Text<span data-ttbm-image-anchor="kept"></span>';
+    assert.deepEqual(imageItemsBackedByHistory(historyText, [
+        { id: 'one', anchorId: 'kept' },
+        { id: 'two', anchorId: 'missing-from-history' },
+        { id: 'legacy-without-anchor' }
+    ]), [{ id: 'one', anchorId: 'kept' }]);
+});
+
 test('image XML anchors are copied into the display text consumed by host regex rules', () => {
     const displayText = 'Rendered first paragraph.\n\nRendered second paragraph.';
     const anchored = imageDisplayTextWithAnchors(displayText, [
@@ -65,19 +75,42 @@ test('image XML anchors are copied into the display text consumed by host regex 
     assert.equal(stripImageAnchorTags(anchored), displayText);
 });
 
-test('persisted anchor hiding does not hide rendered image wrappers', async () => {
+test('persisted XML markers are hidden until late hydration replaces them', async () => {
     const [source, stylesheet] = await Promise.all([
         readFile(new URL('../src/images.js', import.meta.url), 'utf8'),
         readFile(new URL('../style.css', import.meta.url), 'utf8')
     ]);
     assert.doesNotMatch(source, /wrapper\.dataset\.ttbmImageAnchor\s*=/);
-    assert.match(stylesheet, /\[data-ttbm-image-anchor\]:not\(\.ttbm-image-inline\)/);
+    assert.match(stylesheet, /#chat \.mes \[data-ttbm-image-anchor\]/);
 });
 
-test('late host regex rerenders are guarded by cached image restoration', async () => {
+test('image hydration replaces only a surviving post-regex XML marker', async () => {
     const source = await readFile(new URL('../src/images.js', import.meta.url), 'utf8');
     assert.match(source, /new globalThis\.MutationObserver/);
-    assert.match(source, /if \(imageRecordNeedsRender\(record\)\) renderImageRecord\(record\)/);
+    assert.match(source, /mutationsContainImageAnchor\(mutations\)/);
+    assert.match(source, /anchor\.replaceWith\(wrapper\)/);
+    assert.match(source, /requestAnimationFrame\(\(\) => globalThis\.requestAnimationFrame\(flush\)\)/);
+    assert.doesNotMatch(source, /insertAfterSegment|insertAtAnchor|root\.appendChild/);
+});
+
+test('persisting an image marker also updates the active swipe history', async () => {
+    const source = await readFile(new URL('../src/app.js', import.meta.url), 'utf8');
+    assert.match(source, /syncMesToSwipe\(localIndex\);\s*updateMessageBlock\(localIndex, message\);/);
+    assert.match(source, /await saveChatConditional\(\)/);
+});
+
+test('display regexes can move or consume the history-backed image marker before hydration', () => {
+    const historyText = insertImageAnchorTags('First paragraph.\n\nSecond paragraph.', [
+        { anchorId: 'regex-controlled-anchor', segmentIndex: 1 }
+    ], segmentImageSource('First paragraph.\n\nSecond paragraph.'));
+    const moved = historyText.replace(
+        /(<span data-ttbm-image-anchor="regex-controlled-anchor"><\/span>)/,
+        '</content>$1<content>'
+    );
+    assert.deepEqual(imageAnchorIds(moved), ['regex-controlled-anchor']);
+
+    const consumed = moved.replace(/<span data-ttbm-image-anchor="regex-controlled-anchor"><\/span>/, '');
+    assert.deepEqual(imageAnchorIds(consumed), []);
 });
 
 test('default image workflow points to the current RunPod endpoint', () => {

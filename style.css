@@ -320,7 +320,7 @@ body.ttbm-modal-open {
     clear: both;
 }
 
-#chat .mes [data-ttbm-image-anchor]:not(.ttbm-image-inline) {
+#chat .mes [data-ttbm-image-anchor] {
     display: none !important;
 }
 

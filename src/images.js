@@ -46,6 +46,11 @@ export function imageAnchorIds(value) {
     return ids;
 }
 
+export function imageItemsBackedByHistory(messageText, items) {
+    const anchors = new Set(imageAnchorIds(messageText));
+    return (items || []).filter(item => item?.anchorId && anchors.has(item.anchorId));
+}
+
 export function imageMessageIdentity({ chatKey, floor, message, messageIndex = 0 }) {
     const sendDate = String(message?.send_date || '').trim();
     const swipeId = Number.isFinite(Number(message?.swipe_id)) ? Number(message.swipe_id) : 0;
@@ -529,189 +534,33 @@ function escapeAttribute(value) {
         .replaceAll('>', '&gt;');
 }
 
-function textNodeWalker(root) {
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-        acceptNode(node) {
-            if (!node.nodeValue?.trim()) return NodeFilter.FILTER_REJECT;
-            if (node.parentElement?.closest?.('[data-ttbm-image-slot]')) return NodeFilter.FILTER_REJECT;
-            return NodeFilter.FILTER_ACCEPT;
-        }
-    });
-    const nodes = [];
-    while (walker.nextNode()) nodes.push(walker.currentNode);
-    return nodes;
-}
-
-function normalizeLocatorText(value) {
-    return String(value ?? '').replace(/\s+/g, ' ').trim();
-}
-
-function normalizedTextIndex(root) {
-    const chars = [];
-    const map = [];
-    let previousWasSpace = false;
-    for (const node of textNodeWalker(root)) {
-        const value = node.nodeValue || '';
-        for (let offset = 0; offset < value.length; offset += 1) {
-            const char = value[offset];
-            if (/\s/.test(char)) {
-                if (!previousWasSpace) {
-                    chars.push(' ');
-                    map.push({ node, offset });
-                    previousWasSpace = true;
-                }
-                continue;
-            }
-            chars.push(char);
-            map.push({ node, offset });
-            previousWasSpace = false;
-        }
-    }
-    return { text: chars.join(''), map };
-}
-
-function normalizedRange(root, needle, occurrence = 1) {
-    const target = normalizeLocatorText(needle);
-    if (!target) return null;
-    const index = normalizedTextIndex(root);
-    let seen = 0;
-    let searchFrom = 0;
-    while (searchFrom <= index.text.length) {
-        const start = index.text.indexOf(target, searchFrom);
-        if (start < 0) break;
-        seen += 1;
-        if (seen === occurrence) {
-            return {
-                start: index.map[start],
-                end: index.map[start + target.length - 1]
-            };
-        }
-        searchFrom = start + Math.max(1, target.length);
-    }
-    return null;
-}
-
-function lastNormalizedRange(root, needle) {
-    const target = normalizeLocatorText(needle);
-    if (!target) return null;
-    const index = normalizedTextIndex(root);
-    const start = index.text.lastIndexOf(target);
-    if (start < 0) return null;
-    return {
-        start: index.map[start],
-        end: index.map[start + target.length - 1]
-    };
-}
-
-function insertAfterMappedPosition(position, node) {
-    if (!position?.node?.parentNode) return false;
-    const after = position.node.splitText(position.offset + 1);
-    after.parentNode.insertBefore(node, after);
-    return true;
-}
-
-function insertAfterRegexContentBoundary(root, boundary, node) {
-    const boundaryNode = boundary?.node || boundary;
-    const element = boundaryNode?.nodeType === 1 ? boundaryNode : boundaryNode?.parentElement;
-    const content = element?.closest?.('content');
-    if (!content?.parentNode || !root.contains(content)) return false;
-
-    try {
-        const remainder = document.createRange();
-        if (boundaryNode?.nodeType === 1) {
-            remainder.setStartAfter(boundaryNode);
-        } else {
-            remainder.setStart(boundary.node, boundary.offset + 1);
-        }
-        remainder.setEnd(content, content.childNodes.length);
-        if (normalizeLocatorText(remainder.cloneContents().textContent)) return false;
-        content.insertAdjacentElement('afterend', node);
-        return true;
-    } catch (error) {
-        console.warn('[BranchMemory] Failed to use regex-created <content> boundary', error);
-        return false;
-    }
-}
-
-function insertAfterSegment(root, item, node) {
-    if (item.contentWrapped && item.isLastSegment) {
-        const closing = lastNormalizedRange(root, '</content>');
-        if (insertAfterMappedPosition(closing?.end, node)) return true;
-    }
-
-    const range = normalizedRange(root, item.segmentText, item.segmentOccurrence || 1);
-    if (insertAfterRegexContentBoundary(root, range?.end, node)) return true;
-    return insertAfterMappedPosition(range?.end, node);
-}
-
-function insertAfterImageAnchor(root, item, node) {
-    if (!item.anchorId) return false;
-    const anchor = root.querySelector?.(`[${IMAGE_ANCHOR_ATTRIBUTE}="${cssEscape(item.anchorId)}"]`);
-    if (!anchor?.parentNode) return false;
-    if (insertAfterRegexContentBoundary(root, anchor, node)) return true;
-    anchor.insertAdjacentElement('afterend', node);
-    return true;
-}
-
-function insertAtAnchor(root, anchor, occurrence, placement, node) {
-    let seen = 0;
-    for (const textNode of textNodeWalker(root)) {
-        let searchFrom = 0;
-        while (searchFrom <= textNode.nodeValue.length) {
-            const index = textNode.nodeValue.indexOf(anchor, searchFrom);
-            if (index < 0) break;
-            seen += 1;
-            if (seen === occurrence) {
-                if (placement === 'before') {
-                    const anchorNode = textNode.splitText(index);
-                    anchorNode.parentNode.insertBefore(node, anchorNode);
-                } else if (placement === 'replace') {
-                    const anchorNode = textNode.splitText(index);
-                    anchorNode.splitText(anchor.length);
-                    anchorNode.parentNode.replaceChild(node, anchorNode);
-                } else {
-                    const afterAnchor = textNode.splitText(index + anchor.length);
-                    afterAnchor.parentNode.insertBefore(node, afterAnchor);
-                }
-                return true;
-            }
-            searchFrom = index + Math.max(1, anchor.length);
-        }
-    }
-    return false;
-}
-
 function findMessageTextElement(messageIndex) {
     const message = document.querySelector(`.mes[mesid="${cssEscape(messageIndex)}"]`)
         || document.querySelector(`#chat .mes:nth-of-type(${Number(messageIndex) + 1})`);
     return message?.querySelector?.('.mes_text') || message;
 }
 
+function imageSlotId(record, item) {
+    return `${record.key}.${item.id}`;
+}
+
 function renderImageItem(record, item) {
     const root = findMessageTextElement(record.messageIndex);
-    if (!root || !item?.imageUrl) return false;
+    if (!root || !item?.anchorId || !item?.imageUrl) return false;
     ensureImageOpenDelegation();
-    const slotId = `${record.key}.${item.id}`;
+    const slotId = imageSlotId(record, item);
     let wrapper = root.querySelector(`[data-ttbm-image-slot="${cssEscape(slotId)}"]`);
     if (!wrapper) {
+        const anchor = root.querySelector(`[${IMAGE_ANCHOR_ATTRIBUTE}="${cssEscape(item.anchorId)}"]`);
+        if (!anchor?.parentNode) return false;
         wrapper = document.createElement('span');
         wrapper.className = 'ttbm-image-inline';
         wrapper.dataset.ttbmImageSlot = slotId;
-        // Keep this distinct from the persisted XML marker attribute. The
-        // marker is hidden by CSS, while this wrapper must remain visible.
-        wrapper.dataset.ttbmImageTextAnchor = item.anchor || '';
         wrapper.dataset.ttbmImageSegment = item.segmentIndex || '';
-        let inserted = insertAfterImageAnchor(root, item, wrapper);
-        if (item.segmentText) {
-            inserted ||= insertAfterSegment(root, item, wrapper);
-        }
-        if (!inserted && item.anchor) {
-            inserted = insertAtAnchor(root, item.anchor, item.occurrence || 1, item.placement || 'after', wrapper);
-        }
-        if (!inserted) {
-            root.appendChild(document.createTextNode('\n'));
-            root.appendChild(wrapper);
-        }
+        // The host has already run display regexes, Markdown and sanitization.
+        // Hydration only replaces the surviving history-backed marker; it never
+        // guesses a position from rendered text or appends an unanchored image.
+        anchor.replaceWith(wrapper);
     }
     wrapper.ttbmImageItem = item;
     wrapper.innerHTML = `
@@ -727,31 +576,22 @@ function renderImageRecord(record) {
     for (const item of record.items) renderImageItem(record, item);
 }
 
-function imageRecordNeedsRender(record) {
-    const root = findMessageTextElement(record?.messageIndex);
-    if (!root || !record?.items?.length) return false;
-    return record.items.some(item => {
-        const slotId = `${record.key}.${item.id}`;
-        return !root.querySelector(`[data-ttbm-image-slot="${cssEscape(slotId)}"]`);
+function removeStaleImageSlots(records) {
+    const activeSlotIds = new Set(records.flatMap(record =>
+        (record.items || []).map(item => imageSlotId(record, item))));
+    document.querySelectorAll('[data-ttbm-image-slot]').forEach(node => {
+        if (!activeSlotIds.has(node.dataset.ttbmImageSlot)) node.remove();
     });
 }
 
-function waitForHostMessageRendering() {
-    return new Promise(resolve => {
-        let settled = false;
-        const finish = () => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timeout);
-            resolve();
-        };
-        const timeout = setTimeout(finish, 180);
-        if (typeof globalThis.requestAnimationFrame !== 'function') {
-            queueMicrotask(finish);
-            return;
-        }
-        globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(finish));
-    });
+function nodeContainsImageAnchor(node) {
+    if (node?.nodeType !== 1) return false;
+    return node.hasAttribute?.(IMAGE_ANCHOR_ATTRIBUTE)
+        || Boolean(node.querySelector?.(`[${IMAGE_ANCHOR_ATTRIBUTE}]`));
+}
+
+function mutationsContainImageAnchor(mutations) {
+    return mutations.some(mutation => [...mutation.addedNodes].some(nodeContainsImageAnchor));
 }
 
 export class RunPodClient {
@@ -913,6 +753,8 @@ export class ImagePipeline {
         this.renderedRecords = new Map();
         this.renderObserver = null;
         this.restoreRenderTimer = null;
+        this.renderScheduleVersion = 0;
+        this.renderScheduled = false;
         this.renderQueue = Promise.resolve();
         this.renderVersion = 0;
         this.cancelVersion = 0;
@@ -946,34 +788,59 @@ export class ImagePipeline {
 
     clearRendered() {
         this.renderedRecords.clear();
-        clearTimeout(this.restoreRenderTimer);
-        this.restoreRenderTimer = null;
+        this.#cancelLateRender();
         this.renderObserver?.disconnect();
         this.renderObserver = null;
         document.querySelectorAll('[data-ttbm-image-slot]').forEach(node => node.remove());
+    }
+
+    #cancelLateRender() {
+        this.renderScheduleVersion += 1;
+        this.renderScheduled = false;
+        clearTimeout(this.restoreRenderTimer);
+        this.restoreRenderTimer = null;
     }
 
     #ensureRenderObserver() {
         if (this.renderObserver || typeof globalThis.MutationObserver !== 'function') return;
         const chatRoot = document.querySelector('#chat');
         if (!chatRoot) return;
-        this.renderObserver = new globalThis.MutationObserver(() => {
-            if (!this.renderedRecords.size || this.restoreRenderTimer) return;
-            this.restoreRenderTimer = setTimeout(() => {
-                this.restoreRenderTimer = null;
-                for (const record of this.renderedRecords.values()) {
-                    if (imageRecordNeedsRender(record)) renderImageRecord(record);
-                }
-            }, 120);
+        this.renderObserver = new globalThis.MutationObserver((mutations) => {
+            if (!this.renderedRecords.size || !mutationsContainImageAnchor(mutations)) return;
+            this.#scheduleLateRender();
         });
         this.renderObserver.observe(chatRoot, { childList: true, subtree: true });
+    }
+
+    #scheduleLateRender() {
+        if (this.renderScheduled || !this.renderedRecords.size) return;
+        this.renderScheduled = true;
+        const version = this.renderScheduleVersion;
+        const flush = () => {
+            if (!this.renderScheduled || version !== this.renderScheduleVersion) return;
+            this.renderScheduled = false;
+            clearTimeout(this.restoreRenderTimer);
+            this.restoreRenderTimer = null;
+            for (const record of this.renderedRecords.values()) renderImageRecord(record);
+        };
+
+        // updateMessageBlock() runs display regexes synchronously. Waiting for
+        // two frames also places hydration after Markdown/sanitizer DOM writes
+        // and after other same-turn message decorators. The timeout keeps image
+        // restoration working in background tabs where rAF may be throttled.
+        this.restoreRenderTimer = setTimeout(flush, 180);
+        if (typeof globalThis.requestAnimationFrame !== 'function') {
+            queueMicrotask(flush);
+            return;
+        }
+        globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(flush));
     }
 
     #renderRecord(record) {
         if (!record?.key) return;
         this.renderedRecords.set(record.key, record);
         this.#ensureRenderObserver();
-        renderImageRecord(record);
+        this.#scheduleLateRender();
     }
 
     async refresh({ generate = false, regenerate = false, reason = 'refresh' } = {}) {
@@ -1007,8 +874,8 @@ export class ImagePipeline {
                     return;
                 }
 
-                await waitForHostMessageRendering();
-                this.clearRendered();
+                this.#cancelLateRender();
+                this.renderedRecords.clear();
                 notifyImageDebug(settings, '开始回渲染已有图片缓存');
                 const renderedCacheCount = await this.#renderCached(context);
                 notifyImageDebug(settings, `缓存回渲染完成：${renderedCacheCount} 条记录`);
@@ -1054,7 +921,6 @@ export class ImagePipeline {
                 target.displayText = typeof target.row.message?.extra?.display_text === 'string'
                     ? target.row.message.extra.display_text
                     : null;
-                await waitForHostMessageRendering();
                 notifyImageDebug(settings, `命中图片缓存：第 ${target.row.floor} 楼，${renderable.items.length} 张`, 'success');
                 this.#renderRecord(renderable);
                 return;
@@ -1393,16 +1259,15 @@ export class ImagePipeline {
 
     #recordForCurrentRow(record, row, windowInfo) {
         if (!record || !row) return null;
-        let items = Array.isArray(record.items) ? record.items : [];
-        if (record.version >= 2 || items.some(item => item.anchorId)) {
-            const anchors = new Set(imageAnchorIds(row.message?.mes || ''));
-            items = items.filter(item => item.anchorId && anchors.has(item.anchorId));
-        }
+        const items = imageItemsBackedByHistory(row.message?.mes || '', record.items);
         if (!items.length) return null;
         const windowStartIndex = Math.max(0, Number(windowInfo?.windowStartIndex) || 0);
+        const messageIndex = Number(row.index) - windowStartIndex;
+        const windowLength = Math.max(0, Number(windowInfo?.windowLength) || 0);
+        if (messageIndex < 0 || (windowLength > 0 && messageIndex >= windowLength)) return null;
         return {
             ...record,
-            messageIndex: Math.max(0, Number(row.index) - windowStartIndex),
+            messageIndex,
             items
         };
     }
@@ -1410,10 +1275,11 @@ export class ImagePipeline {
     async #syncDisplayTextAnchors(row, record, handle) {
         const currentDisplayText = row?.message?.extra?.display_text;
         if (typeof currentDisplayText !== 'string') return false;
-        if (!record?.items?.some(item => item?.anchorId)) return false;
+        const historyBackedItems = imageItemsBackedByHistory(row?.message?.mes || '', record?.items);
+        if (!historyBackedItems.length) return false;
         const currentAnchorIds = new Set(imageAnchorIds(currentDisplayText));
-        if (record.items.every(item => !item.anchorId || currentAnchorIds.has(item.anchorId))) return false;
-        const anchoredDisplayText = imageDisplayTextWithAnchors(currentDisplayText, record.items);
+        if (historyBackedItems.every(item => currentAnchorIds.has(item.anchorId))) return false;
+        const anchoredDisplayText = imageDisplayTextWithAnchors(currentDisplayText, historyBackedItems);
         if (anchoredDisplayText === currentDisplayText) return false;
         if (typeof this.persistMessageText !== 'function') return false;
 
@@ -1521,7 +1387,6 @@ export class ImagePipeline {
             return;
         }
         const items = plan.map((item, index) => {
-            const segment = segmentedSource.segments[item.segmentIndex - 1];
             const generated = batchResults[index];
             const slotId = hashString(`${key}:${item.id}:${item.segmentIndex}:${item.prompt}`);
             const anchorId = hashString(`${messageIdentity}:${generated.jobId}:${index}:${slotId}`);
@@ -1529,10 +1394,6 @@ export class ImagePipeline {
                 ...item,
                 id: slotId,
                 anchorId,
-                segmentText: segment.text,
-                segmentOccurrence: segment.occurrence,
-                contentWrapped: segmentedSource.contentWrapped,
-                isLastSegment: item.segmentIndex === segmentedSource.segments.length,
                 generationPrompt: generated.generationPrompt,
                 runpodJobId: generated.jobId,
                 runpodMetrics: generated.metrics,
@@ -1612,9 +1473,11 @@ export class ImagePipeline {
         notifyImageDebug(settings, `图片记录已在本地保存 90 天：第 ${row.floor} 楼，${items.length} 张`, 'success');
         const stillCurrent = requestVersion === this.cancelVersion && await this.#targetStillCurrent(target);
         if (stillCurrent) {
-            await waitForHostMessageRendering();
-            this.#renderRecord(record);
-            notifyImageDebug(settings, '图片已插回聊天正文', 'success');
+            const renderable = this.#recordForCurrentRow(record, row, target.windowInfo);
+            if (renderable) {
+                this.#renderRecord(renderable);
+                notifyImageDebug(settings, '图片 XML 占位已进入最终渲染队列', 'success');
+            }
         } else {
             notifyImageDebug(settings, '消息已不在前台分支；图片仅保存到对应分支缓存，不插入当前界面', 'warning');
         }
@@ -1624,11 +1487,16 @@ export class ImagePipeline {
 
     async #renderCached({ snapshot, scopeHash, identity, windowInfo, recipe, handle }) {
         const available = new Set(await this.storage.listImageKeys());
-        if (!available.size) return 0;
+        if (!available.size) {
+            removeStaleImageSlots([]);
+            return 0;
+        }
         await this.#pruneExpiredImageCache(available);
-        if (!available.size) return 0;
+        if (!available.size) {
+            removeStaleImageSlots([]);
+            return 0;
+        }
         const records = [];
-        let displayTextChanged = false;
         for (const floor of snapshot.floors) {
             const row = assistantRowForFloor(snapshot, floor);
             if (!row) continue;
@@ -1653,11 +1521,13 @@ export class ImagePipeline {
                         availableKeys: available
                     });
             }
-            if (await this.#syncDisplayTextAnchors(row, record, handle)) displayTextChanged = true;
             const renderable = this.#recordForCurrentRow(record, row, windowInfo);
-            if (renderable) records.push(renderable);
+            if (renderable) {
+                await this.#syncDisplayTextAnchors(row, renderable, handle);
+                records.push(renderable);
+            }
         }
-        if (displayTextChanged) await waitForHostMessageRendering();
+        removeStaleImageSlots(records);
         records.sort((a, b) => a.messageIndex - b.messageIndex).forEach(record => this.#renderRecord(record));
         return records.length;
     }
