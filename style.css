@@ -307,49 +307,59 @@ body.ttbm-modal-open {
     display: none;
 }
 
-.ttbm-image-inline {
+#chat .mes .ttbm-image-inline {
     display: block;
     width: min(100%, calc(100vw - 32px));
     margin: 0 auto;
-    padding: 0;
-    border: 0;
-    outline: 0;
-    box-shadow: none;
-    background: transparent;
+    padding: 0 !important;
+    border: 0 !important;
+    outline: 0 !important;
+    box-shadow: none !important;
+    background: transparent !important;
     scroll-margin-bottom: 0;
     clear: both;
 }
 
-.ttbm-image-open {
+#chat .mes .ttbm-image-open {
     display: block;
     width: 100%;
     margin: 0;
-    padding: 0;
-    border: 0;
-    outline: 0;
+    padding: 0 !important;
+    border: 0 !important;
+    outline: 0 !important;
     box-shadow: none !important;
-    appearance: none;
-    background: transparent;
+    appearance: none !important;
+    -webkit-appearance: none !important;
+    background: transparent !important;
     color: inherit;
     cursor: zoom-in;
 }
 
-.ttbm-image-open:focus-visible {
+#chat .mes .ttbm-image-open::before,
+#chat .mes .ttbm-image-open::after {
+    content: none !important;
+    display: none !important;
+}
+
+#chat .mes .ttbm-image-open:focus-visible {
     outline: 2px solid var(--SmartThemeQuoteColor);
     outline-offset: 3px;
 }
 
-.ttbm-image-element {
+#chat .mes .ttbm-image-element {
     display: block;
     width: 100%;
     height: auto;
     max-width: 100%;
     max-height: 86vh;
-    margin: 0 auto;
+    margin: 0 auto !important;
+    padding: 0 !important;
     object-fit: contain;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
+    border: 0 !important;
+    border-radius: 0 !important;
+    outline: 0 !important;
+    box-shadow: none !important;
+    background: transparent !important;
 }
 
 .ttbm-image-viewer[hidden] {

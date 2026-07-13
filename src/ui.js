@@ -76,7 +76,7 @@ function monitorRecordHtml(record) {
 }
 
 export class SettingsUi {
-    constructor({ settings, monitor, getConnectionProfiles = () => [], getCurrentCharacterInfo = () => null, onSettingsChanged, onImageGenerationToggle = () => {}, onRunNow }) {
+    constructor({ settings, monitor, getConnectionProfiles = () => [], getCurrentCharacterInfo = () => null, onSettingsChanged, onImageGenerationToggle = () => {}, onRegenerateLatestImage = () => {}, onRunNow }) {
         this.settings = settings;
         this.monitor = monitor;
         this.monitorState = monitor?.snapshot() || { active: false, records: [], maxEvents: 300 };
@@ -84,7 +84,9 @@ export class SettingsUi {
         this.getCurrentCharacterInfo = getCurrentCharacterInfo;
         this.onSettingsChanged = onSettingsChanged;
         this.onImageGenerationToggle = onImageGenerationToggle;
+        this.onRegenerateLatestImage = onRegenerateLatestImage;
         this.onRunNow = onRunNow;
+        this.imageRegenerationBusy = false;
         this.stats = null;
         this.modalTab = 'memory';
     }
@@ -123,6 +125,10 @@ export class SettingsUi {
                 <div class="extensionsMenuExtensionButton fa-solid" aria-hidden="true"></div>
                 <span data-ttbm-image-toggle-label></span>
             </div>
+            <div id="ttbm-image-regenerate-latest" class="list-group-item flex-container flexGap5 interactable" role="button" tabindex="0">
+                <div class="extensionsMenuExtensionButton fa-solid fa-rotate" aria-hidden="true"></div>
+                <span data-ttbm-image-regenerate-label>重新生图</span>
+            </div>
         `;
         const attachmentContainer = document.getElementById('attach_file_wand_container');
         if (attachmentContainer?.parentElement === menu) attachmentContainer.insertAdjacentElement('afterend', container);
@@ -148,6 +154,33 @@ export class SettingsUi {
         };
         toggle.addEventListener('click', activate);
         toggle.addEventListener('keydown', activate);
+        const regenerate = container.querySelector('#ttbm-image-regenerate-latest');
+        const activateRegenerate = async (event) => {
+            if (event.type === 'keydown' && !['Enter', ' '].includes(event.key)) return;
+            event.preventDefault();
+            if (this.imageRegenerationBusy) return;
+            if (!this.settings.enabled) {
+                globalThis.toastr?.warning?.('扩展总开关已关闭，请先在扩展设置中启用。');
+                return;
+            }
+            if (!this.settings.image.enabled || this.settings.image.paused) {
+                globalThis.toastr?.warning?.('生图当前已暂停，请先点击“启动生图”。');
+                return;
+            }
+            this.imageRegenerationBusy = true;
+            this.#updateWandImageToggle();
+            globalThis.toastr?.info?.('正在清理最后一条 AI 消息的旧图并重新生图。');
+            try {
+                await this.onRegenerateLatestImage();
+            } catch (error) {
+                this.showError(error);
+            } finally {
+                this.imageRegenerationBusy = false;
+                this.#updateWandImageToggle();
+            }
+        };
+        regenerate.addEventListener('click', activateRegenerate);
+        regenerate.addEventListener('keydown', activateRegenerate);
         this.#updateWandImageToggle();
     }
 
@@ -164,6 +197,19 @@ export class SettingsUi {
         toggle.setAttribute('aria-label', label);
         toggle.setAttribute('aria-pressed', String(paused));
         toggle.title = paused ? '恢复新的自动和手动生图请求' : '暂停新的生图请求，并取消当前 RunPod 队列';
+
+        const regenerate = document.getElementById('ttbm-image-regenerate-latest');
+        if (!regenerate) return;
+        const unavailable = paused || this.imageRegenerationBusy;
+        regenerate.classList.toggle('disabled', unavailable);
+        regenerate.setAttribute('aria-disabled', String(unavailable));
+        regenerate.setAttribute('aria-busy', String(this.imageRegenerationBusy));
+        regenerate.tabIndex = unavailable ? -1 : 0;
+        regenerate.querySelector('[data-ttbm-image-regenerate-label]').textContent = this.imageRegenerationBusy ? '重新生图中…' : '重新生图';
+        regenerate.querySelector('.extensionsMenuExtensionButton')?.classList.toggle('fa-spin', this.imageRegenerationBusy);
+        regenerate.title = paused
+            ? '请先启动生图'
+            : '清除最后一条 AI 消息的已有图片和缓存，再执行完整生图流程';
     }
 
     #mountSettingsEntry() {

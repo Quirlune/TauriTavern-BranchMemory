@@ -238,6 +238,10 @@ export async function bootstrapExtension() {
             cancelPendingImageGeneration();
             imagePipeline?.cancel();
         },
+        onRegenerateLatestImage: () => {
+            cancelPendingImageGeneration();
+            return enqueueImages({ regenerate: true, reason: 'manual' });
+        },
         onRunNow: () => {
             return enqueue({ generateMemory: true, generateStatus: true, reason: 'manual' })
                 .then(() => enqueueImages({ generate: true, reason: 'manual' }));

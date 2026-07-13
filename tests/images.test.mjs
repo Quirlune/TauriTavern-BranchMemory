@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { DEFAULT_SETTINGS, migrateRunPodEndpointId } from '../src/defaults.js';
-import { imageGenerationNeedsConfirmation, RunPodClient } from '../src/images.js';
+import { imageCachePrefix, imageGenerationNeedsConfirmation, RunPodClient } from '../src/images.js';
 
 function response(body, ok = true, status = 200) {
     return { ok, status, json: async () => body };
@@ -11,6 +11,14 @@ test('five or more generated images always require cost confirmation', () => {
     assert.equal(imageGenerationNeedsConfirmation(4), false);
     assert.equal(imageGenerationNeedsConfirmation(5), true);
     assert.equal(imageGenerationNeedsConfirmation(12), true);
+});
+
+test('image regeneration cache prefix covers every recipe for the same branch floor', () => {
+    const prefix = imageCachePrefix({ scopeHash: 'scope', floor: 7, chain: 'chain' });
+    assert.equal(prefix, 'v1.scope.7.chain.');
+    assert.equal('v1.scope.7.chain.recipe-a'.startsWith(prefix), true);
+    assert.equal('v1.scope.7.other.recipe-a'.startsWith(prefix), false);
+    assert.equal('v1.scope.8.chain.recipe-a'.startsWith(prefix), false);
 });
 
 test('default image workflow points to the current RunPod endpoint', () => {
@@ -37,6 +45,8 @@ test('RunPod client submits every job before polling, then checks statuses concu
         return response({
             id: jobId,
             status: 'COMPLETED',
+            delayTime: jobId === 'job-1' ? 12000 : 34000,
+            executionTime: jobId === 'job-1' ? 27000 : 10000,
             output: { images: [{ filename: `${jobId}.png`, type: 'base64', data: `base64-${jobId}` }] }
         });
     };
@@ -69,6 +79,9 @@ test('RunPod client submits every job before polling, then checks statuses concu
         assert.equal('negative_prompt' in JSON.parse(calls[0].options.body).input, false);
         assert.equal(statusCallsStarted, 2);
         assert.equal(results[1].imageUrl, 'data:image/png;base64,base64-job-2');
+        assert.deepEqual(results[1].metrics.delayTimeMs, 34000);
+        assert.deepEqual(results[1].metrics.executionTimeMs, 10000);
+        assert.equal(Number.isFinite(results[1].metrics.clientElapsedMs), true);
     } finally {
         globalThis.fetch = originalFetch;
     }

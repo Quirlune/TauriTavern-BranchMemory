@@ -26,6 +26,10 @@ export function imageGenerationNeedsConfirmation(count) {
     return Math.floor(Number(count) || 0) >= IMAGE_CONFIRMATION_THRESHOLD;
 }
 
+export function imageCachePrefix({ scopeHash, floor, chain }) {
+    return `v1.${scopeHash}.${Math.max(0, Number(floor) || 0)}.${chain}.`;
+}
+
 function latestAssistantRow(snapshot) {
     for (let index = snapshot.rows.length - 1; index >= 0; index -= 1) {
         const row = snapshot.rows[index];
@@ -84,6 +88,16 @@ function characterPromptRecord(settings, info) {
 function asNumber(value, fallback) {
     const number = Number(value);
     return Number.isFinite(number) ? number : fallback;
+}
+
+function nonNegativeMilliseconds(value) {
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 ? Math.round(number) : null;
+}
+
+function formatMilliseconds(value) {
+    if (!Number.isFinite(value)) return '-';
+    return `${(value / 1000).toFixed(2)}s`;
 }
 
 function randomSeed() {
@@ -669,7 +683,7 @@ export class RunPodClient {
                 }, signal);
                 const id = String(result.id || '').trim();
                 if (!id) throw new Error('RunPod /run 未返回任务 ID。');
-                jobs.push({ id, done: false, result: null, positivePrompt });
+                jobs.push({ id, done: false, result: null, positivePrompt, submittedAt: Date.now(), metrics: null });
             }
 
             notifyImageDebug(config.settings, `${jobs.length} 个 RunPod 任务已连续入队，开始统一轮询`, 'success');
@@ -685,7 +699,17 @@ export class RunPodClient {
                     const status = String(result.status || '').toUpperCase();
                     if (status === 'COMPLETED') {
                         job.result = this.#imageDataUrl(result);
+                        job.metrics = {
+                            delayTimeMs: nonNegativeMilliseconds(result.delayTime),
+                            executionTimeMs: nonNegativeMilliseconds(result.executionTime),
+                            clientElapsedMs: Math.max(0, Date.now() - job.submittedAt)
+                        };
                         job.done = true;
+                        notifyImageDebug(
+                            config.settings,
+                            `RunPod 任务完成：job=${job.id}，排队/拉起=${formatMilliseconds(job.metrics.delayTimeMs)}，执行=${formatMilliseconds(job.metrics.executionTimeMs)}，客户端等待=${formatMilliseconds(job.metrics.clientElapsedMs)}`,
+                            'success'
+                        );
                     } else if (['FAILED', 'CANCELLED', 'TIMED_OUT'].includes(status)) {
                         throw new Error(result.error || `RunPod 任务 ${job.id} ${status}。`);
                     }
@@ -693,7 +717,12 @@ export class RunPodClient {
             }
 
             if (jobs.some(job => !job.done)) throw new Error('RunPod 等待图片生成超时。');
-            return jobs.map(job => ({ imageUrl: job.result, generationPrompt: job.positivePrompt, jobId: job.id }));
+            return jobs.map(job => ({
+                imageUrl: job.result,
+                generationPrompt: job.positivePrompt,
+                jobId: job.id,
+                metrics: job.metrics
+            }));
         } catch (error) {
             await this.#cancelJobs(jobs, config);
             throw error;
@@ -747,7 +776,11 @@ export class ImagePipeline {
         document.querySelectorAll('[data-ttbm-image-slot]').forEach(node => node.remove());
     }
 
-    async refresh({ generate = false, reason = 'refresh' } = {}) {
+    async refresh({ generate = false, regenerate = false, reason = 'refresh' } = {}) {
+        if (regenerate) {
+            this.cancel();
+            return this.#generateLatest({ reason, replaceExisting: true });
+        }
         if (generate) return this.#generateLatest({ reason });
         return this.#renderCurrentCached({ reason });
     }
@@ -782,7 +815,7 @@ export class ImagePipeline {
         return this.renderQueue;
     }
 
-    async #generateLatest({ reason = 'refresh' } = {}) {
+    async #generateLatest({ reason = 'refresh', replaceExisting = false } = {}) {
         const settings = this.getSettings();
         const requestVersion = this.cancelVersion;
         notifyImageDebug(settings, `准备图片生成：reason=${reason}`);
@@ -803,7 +836,13 @@ export class ImagePipeline {
         this.#throwIfCancelled(requestVersion);
         if (!target) {
             notifyImageDebug(settings, '没有找到稳定的 AI 回复，跳过图片生成', 'warning');
+            if (replaceExisting) notifyImageProgress(settings, '没有可重新生图的 AI 消息', 'warning');
             return;
+        }
+
+        if (replaceExisting) {
+            await this.#clearImagesForTarget(target);
+            this.#throwIfCancelled(requestVersion);
         }
 
         const existing = await this.#getCachedImageForTarget(target);
@@ -990,6 +1029,23 @@ export class ImagePipeline {
         });
     }
 
+    async #clearImagesForTarget(target) {
+        const availableKeys = new Set(await this.storage.listImageKeys());
+        const prefix = imageCachePrefix({
+            scopeHash: target.scopeHash,
+            floor: target.row.floor,
+            chain: target.floorInfo.chain
+        });
+        const keys = [...availableKeys].filter(key => String(key).startsWith(prefix));
+        for (const key of keys) {
+            await this.storage.deleteImage(key);
+        }
+
+        const root = findMessageTextElement(target.row.index);
+        root?.querySelectorAll?.('[data-ttbm-image-slot]').forEach(node => node.remove());
+        notifyImageDebug(target.settings, `已清理最后一条 AI 消息的图片缓存 ${keys.length} 条，开始重新规划`, 'success');
+    }
+
     async #deleteImageCacheRecord(key, availableKeys = null) {
         try {
             await this.storage.deleteImage(key);
@@ -1024,7 +1080,7 @@ export class ImagePipeline {
 
     async #getLatestImageForFloorChain({ scopeHash, floor, chain, availableKeys = null }) {
         const keys = availableKeys || new Set(await this.storage.listImageKeys());
-        const prefix = `v1.${scopeHash}.${Math.max(0, Number(floor) || 0)}.${chain}.`;
+        const prefix = imageCachePrefix({ scopeHash, floor, chain });
         const candidates = [...keys].filter(key => String(key).startsWith(prefix));
         if (!candidates.length) return null;
 
@@ -1134,6 +1190,7 @@ export class ImagePipeline {
                 isLastSegment: item.segmentIndex === segmentedSource.segments.length,
                 generationPrompt: generated.generationPrompt,
                 runpodJobId: generated.jobId,
+                runpodMetrics: generated.metrics,
                 imageUrl: generated.imageUrl,
                 createdAt: new Date().toISOString(),
                 cachedAt: new Date().toISOString()
