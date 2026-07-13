@@ -55,20 +55,6 @@ test('image XML anchors are persisted at planned segments and can be stripped fo
     assert.equal(stripImageAnchorTags(anchored), source);
 });
 
-test('image anchors split content wrappers so rendered images stay outside beautification', () => {
-    const source = '<content class="beautified">First paragraph.\n\nSecond paragraph.</content>';
-    const segmented = segmentImageSource(source);
-    const anchored = insertImageAnchorTags(source, [
-        { anchorId: 'between-paragraphs', segmentIndex: 1 },
-        { anchorId: 'between-paragraphs-second-image', segmentIndex: 1 },
-        { anchorId: 'after-content', segmentIndex: 2 }
-    ], segmented);
-    assert.match(anchored, /First paragraph\.<\/content><span data-ttbm-image-anchor="between-paragraphs"><\/span><span data-ttbm-image-anchor="between-paragraphs-second-image"><\/span><content class="beautified">/);
-    assert.match(anchored, /Second paragraph\.<\/content><span data-ttbm-image-anchor="after-content"><\/span>$/);
-    assert.deepEqual(imageAnchorIds(anchored), ['between-paragraphs', 'between-paragraphs-second-image', 'after-content']);
-    assert.equal(stripImageAnchorTags(anchored), source);
-});
-
 test('persisted anchor hiding does not hide rendered image wrappers', async () => {
     const [source, stylesheet] = await Promise.all([
         readFile(new URL('../src/images.js', import.meta.url), 'utf8'),

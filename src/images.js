@@ -22,9 +22,7 @@ const IMAGE_CONFIRMATION_THRESHOLD = 5;
 const TARGET_STABLE_WAITS_MS = [80, 180, 320];
 const TARGET_STABLE_WAITS_MANUAL_MS = [40, 120, 240];
 const IMAGE_ANCHOR_ATTRIBUTE = 'data-ttbm-image-anchor';
-const IMAGE_ANCHOR_TAG_SOURCE = String.raw`<span\b[^>]*\bdata-ttbm-image-anchor\s*=\s*(?:"[^"]*"|'[^']*')[^>]*>\s*<\/span\s*>`;
-const IMAGE_ANCHOR_TAG_PATTERN = new RegExp(IMAGE_ANCHOR_TAG_SOURCE, 'gi');
-const IMAGE_ANCHOR_CONTENT_BREAK_PATTERN = new RegExp(`<\/content>((?:${IMAGE_ANCHOR_TAG_SOURCE})+)<content\\b[^>]*>`, 'gi');
+const IMAGE_ANCHOR_TAG_PATTERN = /<span\b[^>]*\bdata-ttbm-image-anchor\s*=\s*(?:"[^"]*"|'[^']*')[^>]*>\s*<\/span\s*>/gi;
 const IMAGE_ANCHOR_ID_PATTERN = /<span\b[^>]*\bdata-ttbm-image-anchor\s*=\s*(?:"([^"]+)"|'([^']+)')[^>]*>\s*<\/span\s*>/gi;
 
 export function imageGenerationNeedsConfirmation(count) {
@@ -36,9 +34,7 @@ export function imageCachePrefix({ scopeHash, floor, chain }) {
 }
 
 export function stripImageAnchorTags(value) {
-    return String(value ?? '')
-        .replace(IMAGE_ANCHOR_CONTENT_BREAK_PATTERN, '')
-        .replace(IMAGE_ANCHOR_TAG_PATTERN, '');
+    return String(value ?? '').replace(IMAGE_ANCHOR_TAG_PATTERN, '');
 }
 
 export function imageAnchorIds(value) {
@@ -94,7 +90,6 @@ export function insertImageAnchorTags(messageText, items, segmentedSource) {
     const clean = stripImageAnchorTags(messageText);
     const fallbackSegments = segmentImageSource(clean);
     const insertions = new Map();
-    const contentOpeningTag = clean.match(/^\s*(<content\b[^>]*>)/i)?.[1] || '<content>';
 
     for (const item of items || []) {
         if (!item?.anchorId) continue;
@@ -114,21 +109,15 @@ export function insertImageAnchorTags(messageText, items, segmentedSource) {
             if (closingIndex >= 0) insertionIndex = closingIndex + '</content>'.length;
         }
         if (insertionIndex < 0) insertionIndex = clean.length;
-        const insertion = insertions.get(insertionIndex) || { tags: [], splitContent: false };
-        insertion.tags.push(imageAnchorTag(item.anchorId));
-        insertion.splitContent ||= Boolean(segmentedSource?.contentWrapped && index < segmentedSource.segments.length - 1);
-        insertions.set(insertionIndex, insertion);
+        const tags = insertions.get(insertionIndex) || [];
+        tags.push(imageAnchorTag(item.anchorId));
+        insertions.set(insertionIndex, tags);
     }
 
     let output = clean;
     const positions = [...insertions.keys()].sort((left, right) => right - left);
     for (const position of positions) {
-        const insertion = insertions.get(position);
-        const marker = insertion.tags.join('');
-        const boundary = insertion.splitContent
-            ? `</content>${marker}${contentOpeningTag}`
-            : marker;
-        output = `${output.slice(0, position)}${boundary}${output.slice(position)}`;
+        output = `${output.slice(0, position)}${insertions.get(position).join('')}${output.slice(position)}`;
     }
     return output;
 }
@@ -615,47 +604,6 @@ function insertAfterMappedPosition(position, node) {
     return true;
 }
 
-function renderedContentAncestor(root, boundary) {
-    const element = boundary?.nodeType === 1 ? boundary : boundary?.parentElement;
-    const content = element?.closest?.('content');
-    return content && root.contains(content) ? content : null;
-}
-
-function insertOutsideRenderedContent(root, content, range, node) {
-    if (!content?.parentNode) return false;
-    try {
-        range.setEnd(content, content.childNodes.length);
-        const remainder = range.extractContents();
-        const continuation = content.cloneNode(false);
-        continuation.appendChild(remainder);
-        content.parentNode.insertBefore(node, content.nextSibling);
-        if (continuation.childNodes.length) {
-            node.parentNode.insertBefore(continuation, node.nextSibling);
-        }
-        return true;
-    } catch (error) {
-        console.warn('[BranchMemory] Failed to split rendered <content> around image anchor', error);
-        return false;
-    }
-}
-
-function insertOutsideContentAfterPosition(root, position, node) {
-    if (!position?.node?.parentNode) return false;
-    const content = renderedContentAncestor(root, position.node);
-    if (!content) return false;
-    const range = document.createRange();
-    range.setStart(position.node, position.offset + 1);
-    return insertOutsideRenderedContent(root, content, range, node);
-}
-
-function insertOutsideContentAfterElement(root, element, node) {
-    const content = renderedContentAncestor(root, element);
-    if (!content) return false;
-    const range = document.createRange();
-    range.setStartAfter(element);
-    return insertOutsideRenderedContent(root, content, range, node);
-}
-
 function insertAfterSegment(root, item, node) {
     if (item.contentWrapped && item.isLastSegment) {
         const closing = lastNormalizedRange(root, '</content>');
@@ -663,7 +611,6 @@ function insertAfterSegment(root, item, node) {
     }
 
     const range = normalizedRange(root, item.segmentText, item.segmentOccurrence || 1);
-    if (item.contentWrapped && insertOutsideContentAfterPosition(root, range?.end, node)) return true;
     return insertAfterMappedPosition(range?.end, node);
 }
 
@@ -671,7 +618,6 @@ function insertAfterImageAnchor(root, item, node) {
     if (!item.anchorId) return false;
     const anchor = root.querySelector?.(`[${IMAGE_ANCHOR_ATTRIBUTE}="${cssEscape(item.anchorId)}"]`);
     if (!anchor?.parentNode) return false;
-    if (insertOutsideContentAfterElement(root, anchor, node)) return true;
     anchor.insertAdjacentElement('afterend', node);
     return true;
 }
