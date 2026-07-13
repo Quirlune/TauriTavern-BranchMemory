@@ -291,7 +291,7 @@ export async function bootstrapExtension() {
     imagePipeline = new ImagePipeline({
         storage,
         getSettings: () => settings,
-        persistMessageText: async ({ absoluteIndex, expectedText, text }) => {
+        persistMessageText: async ({ absoluteIndex, expectedText, text, expectedDisplayText = null, displayText = null }) => {
             const windowInfo = await storage.currentWindowInfo();
             const localIndex = Number(absoluteIndex) - Number(windowInfo?.windowStartIndex || 0);
             const message = chat[localIndex];
@@ -301,9 +301,26 @@ export async function bootstrapExtension() {
             if (String(message.mes || '') !== String(expectedText || '')) {
                 throw new Error('写入图片锚点前消息已变化，已停止保存，避免锚点写入错误消息。');
             }
+            const usesDisplayText = typeof expectedDisplayText === 'string' || typeof displayText === 'string';
+            if (usesDisplayText && String(message.extra?.display_text ?? '') !== String(expectedDisplayText ?? '')) {
+                throw new Error('写入图片锚点前显示文本已变化，已停止保存，避免正则处理错误内容。');
+            }
+            const previousText = message.mes;
+            const previousDisplayText = message.extra?.display_text;
             message.mes = String(text || '');
+            if (usesDisplayText) {
+                message.extra ||= {};
+                message.extra.display_text = String(displayText ?? '');
+            }
             updateMessageBlock(localIndex, message);
-            await saveChatConditional();
+            try {
+                await saveChatConditional();
+            } catch (error) {
+                message.mes = previousText;
+                if (usesDisplayText) message.extra.display_text = previousDisplayText;
+                updateMessageBlock(localIndex, message);
+                throw error;
+            }
             return { renderMessageIndex: localIndex };
         },
         generate: async ({ prompt, responseLength, apiConfig }) => {

@@ -5,6 +5,7 @@ import { DEFAULT_SETTINGS, migrateRunPodEndpointId } from '../src/defaults.js';
 import {
     imageAnchorIds,
     imageCachePrefix,
+    imageDisplayTextWithAnchors,
     imageGenerationNeedsConfirmation,
     imageMessageCachePrefix,
     imageMessageIdentity,
@@ -53,6 +54,15 @@ test('image XML anchors are persisted at planned segments and can be stripped fo
     assert.match(anchored, /Second paragraph\.<span data-ttbm-image-anchor="anchor-two"><\/span>/);
     assert.deepEqual(imageAnchorIds(anchored), ['anchor-one', 'anchor-two']);
     assert.equal(stripImageAnchorTags(anchored), source);
+});
+
+test('image XML anchors are copied into the display text consumed by host regex rules', () => {
+    const displayText = 'Rendered first paragraph.\n\nRendered second paragraph.';
+    const anchored = imageDisplayTextWithAnchors(displayText, [
+        { anchorId: 'regex-visible-anchor', segmentIndex: 1 }
+    ]);
+    assert.match(anchored, /Rendered first paragraph\.<span data-ttbm-image-anchor="regex-visible-anchor"><\/span>/);
+    assert.equal(stripImageAnchorTags(anchored), displayText);
 });
 
 test('persisted anchor hiding does not hide rendered image wrappers', async () => {

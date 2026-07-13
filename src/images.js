@@ -122,6 +122,12 @@ export function insertImageAnchorTags(messageText, items, segmentedSource) {
     return output;
 }
 
+export function imageDisplayTextWithAnchors(displayText, items) {
+    if (typeof displayText !== 'string') return null;
+    const clean = stripImageAnchorTags(displayText);
+    return insertImageAnchorTags(clean, items, segmentImageSource(clean));
+}
+
 function latestAssistantRow(snapshot) {
     for (let index = snapshot.rows.length - 1; index >= 0; index -= 1) {
         const row = snapshot.rows[index];
@@ -604,6 +610,29 @@ function insertAfterMappedPosition(position, node) {
     return true;
 }
 
+function insertAfterRegexContentBoundary(root, boundary, node) {
+    const boundaryNode = boundary?.node || boundary;
+    const element = boundaryNode?.nodeType === 1 ? boundaryNode : boundaryNode?.parentElement;
+    const content = element?.closest?.('content');
+    if (!content?.parentNode || !root.contains(content)) return false;
+
+    try {
+        const remainder = document.createRange();
+        if (boundaryNode?.nodeType === 1) {
+            remainder.setStartAfter(boundaryNode);
+        } else {
+            remainder.setStart(boundary.node, boundary.offset + 1);
+        }
+        remainder.setEnd(content, content.childNodes.length);
+        if (normalizeLocatorText(remainder.cloneContents().textContent)) return false;
+        content.insertAdjacentElement('afterend', node);
+        return true;
+    } catch (error) {
+        console.warn('[BranchMemory] Failed to use regex-created <content> boundary', error);
+        return false;
+    }
+}
+
 function insertAfterSegment(root, item, node) {
     if (item.contentWrapped && item.isLastSegment) {
         const closing = lastNormalizedRange(root, '</content>');
@@ -611,6 +640,7 @@ function insertAfterSegment(root, item, node) {
     }
 
     const range = normalizedRange(root, item.segmentText, item.segmentOccurrence || 1);
+    if (insertAfterRegexContentBoundary(root, range?.end, node)) return true;
     return insertAfterMappedPosition(range?.end, node);
 }
 
@@ -618,6 +648,7 @@ function insertAfterImageAnchor(root, item, node) {
     if (!item.anchorId) return false;
     const anchor = root.querySelector?.(`[${IMAGE_ANCHOR_ATTRIBUTE}="${cssEscape(item.anchorId)}"]`);
     if (!anchor?.parentNode) return false;
+    if (insertAfterRegexContentBoundary(root, anchor, node)) return true;
     anchor.insertAdjacentElement('afterend', node);
     return true;
 }
@@ -694,6 +725,24 @@ function renderImageItem(record, item) {
 function renderImageRecord(record) {
     if (!record?.items?.length) return;
     for (const item of record.items) renderImageItem(record, item);
+}
+
+function waitForHostMessageRendering() {
+    return new Promise(resolve => {
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            resolve();
+        };
+        const timeout = setTimeout(finish, 180);
+        if (typeof globalThis.requestAnimationFrame !== 'function') {
+            queueMicrotask(finish);
+            return;
+        }
+        globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(finish));
+    });
 }
 
 export class RunPodClient {
@@ -918,6 +967,7 @@ export class ImagePipeline {
                     return;
                 }
 
+                await waitForHostMessageRendering();
                 document.querySelectorAll('[data-ttbm-image-slot]').forEach(node => node.remove());
                 notifyImageDebug(settings, '开始回渲染已有图片缓存');
                 const renderedCacheCount = await this.#renderCached(context);
@@ -960,6 +1010,11 @@ export class ImagePipeline {
         if (existing) {
             const renderable = this.#recordForCurrentRow(existing, target.row, target.windowInfo);
             if (renderable) {
+                await this.#syncDisplayTextAnchors(target.row, renderable, target.handle);
+                target.displayText = typeof target.row.message?.extra?.display_text === 'string'
+                    ? target.row.message.extra.display_text
+                    : null;
+                await waitForHostMessageRendering();
                 notifyImageDebug(settings, `命中图片缓存：第 ${target.row.floor} 楼，${renderable.items.length} 张`, 'success');
                 renderImageRecord(renderable);
                 return;
@@ -1057,6 +1112,9 @@ export class ImagePipeline {
         }
 
         const messageText = String(row.message?.mes || '');
+        const displayText = typeof row.message?.extra?.display_text === 'string'
+            ? row.message.extra.display_text
+            : null;
         const source = applyRegexRules(stripImageAnchorTags(messageText), settings.image.inputRegex).trim();
         if (!source) {
             notifyImageDebug(settings, '正文提取后为空，跳过图片规划', 'warning');
@@ -1082,6 +1140,7 @@ export class ImagePipeline {
             key,
             messageIdentity,
             messageText,
+            displayText,
             source,
             sourceHash,
             segmentedSource,
@@ -1187,21 +1246,30 @@ export class ImagePipeline {
             chain: target.floorInfo.chain
         })];
         const cleanMessageText = stripImageAnchorTags(target.messageText);
+        const cleanDisplayText = typeof target.displayText === 'string'
+            ? stripImageAnchorTags(target.displayText)
+            : null;
         let renderMessageIndex = target.row.index;
-        if (cleanMessageText !== target.messageText) {
+        if (cleanMessageText !== target.messageText || cleanDisplayText !== target.displayText) {
             if (typeof this.persistMessageText !== 'function') {
                 throw new Error('当前宿主不支持持久化图片 XML 锚点。');
             }
             const persisted = await this.persistMessageText({
                 absoluteIndex: target.row.index,
                 expectedText: target.messageText,
-                text: cleanMessageText
+                text: cleanMessageText,
+                expectedDisplayText: target.displayText,
+                displayText: cleanDisplayText
             });
             renderMessageIndex = Number.isFinite(Number(persisted?.renderMessageIndex))
                 ? Number(persisted.renderMessageIndex)
                 : renderMessageIndex;
             target.messageText = cleanMessageText;
+            target.displayText = cleanDisplayText;
             target.row.message.mes = cleanMessageText;
+            if (typeof target.row.message?.extra?.display_text === 'string') {
+                target.row.message.extra.display_text = cleanDisplayText;
+            }
             clearHistoryCache(target.handle);
         }
         const keys = [...availableKeys].filter(key => prefixes.some(prefix => String(key).startsWith(prefix)));
@@ -1294,6 +1362,28 @@ export class ImagePipeline {
         };
     }
 
+    async #syncDisplayTextAnchors(row, record, handle) {
+        const currentDisplayText = row?.message?.extra?.display_text;
+        if (typeof currentDisplayText !== 'string') return false;
+        if (!record?.items?.some(item => item?.anchorId)) return false;
+        const currentAnchorIds = new Set(imageAnchorIds(currentDisplayText));
+        if (record.items.every(item => !item.anchorId || currentAnchorIds.has(item.anchorId))) return false;
+        const anchoredDisplayText = imageDisplayTextWithAnchors(currentDisplayText, record.items);
+        if (anchoredDisplayText === currentDisplayText) return false;
+        if (typeof this.persistMessageText !== 'function') return false;
+
+        await this.persistMessageText({
+            absoluteIndex: row.index,
+            expectedText: row.message?.mes || '',
+            text: row.message?.mes || '',
+            expectedDisplayText: currentDisplayText,
+            displayText: anchoredDisplayText
+        });
+        row.message.extra.display_text = anchoredDisplayText;
+        clearHistoryCache(handle);
+        return true;
+    }
+
     async #generateTarget({ target, controller, reason, requestVersion }) {
         const {
             settings,
@@ -1305,6 +1395,7 @@ export class ImagePipeline {
             key,
             messageIdentity,
             messageText,
+            displayText,
             recipe,
             scopeHash,
             source,
@@ -1429,6 +1520,7 @@ export class ImagePipeline {
         };
         await this.storage.setImage(key, record);
         const anchoredMessageText = insertImageAnchorTags(messageText, items, segmentedSource);
+        const anchoredDisplayText = imageDisplayTextWithAnchors(displayText, items);
         try {
             if (typeof this.persistMessageText !== 'function') {
                 throw new Error('当前宿主不支持持久化图片 XML 锚点。');
@@ -1436,13 +1528,19 @@ export class ImagePipeline {
             const persisted = await this.persistMessageText({
                 absoluteIndex: row.index,
                 expectedText: messageText,
-                text: anchoredMessageText
+                text: anchoredMessageText,
+                expectedDisplayText: displayText,
+                displayText: anchoredDisplayText
             });
             if (Number.isFinite(Number(persisted?.renderMessageIndex))) {
                 record.messageIndex = Number(persisted.renderMessageIndex);
             }
             target.messageText = anchoredMessageText;
+            target.displayText = anchoredDisplayText;
             row.message.mes = anchoredMessageText;
+            if (typeof row.message?.extra?.display_text === 'string') {
+                row.message.extra.display_text = anchoredDisplayText;
+            }
             clearHistoryCache(target.handle);
             await this.storage.setImage(key, record);
         } catch (error) {
@@ -1451,10 +1549,16 @@ export class ImagePipeline {
                 await this.persistMessageText({
                     absoluteIndex: row.index,
                     expectedText: anchoredMessageText,
-                    text: messageText
+                    text: messageText,
+                    expectedDisplayText: anchoredDisplayText,
+                    displayText
                 }).then(() => {
                     target.messageText = messageText;
+                    target.displayText = displayText;
                     row.message.mes = messageText;
+                    if (typeof row.message?.extra?.display_text === 'string') {
+                        row.message.extra.display_text = displayText;
+                    }
                     clearHistoryCache(target.handle);
                 }).catch(() => undefined);
             }
@@ -1463,6 +1567,7 @@ export class ImagePipeline {
         notifyImageDebug(settings, `图片记录已在本地保存 90 天：第 ${row.floor} 楼，${items.length} 张`, 'success');
         const stillCurrent = requestVersion === this.cancelVersion && await this.#targetStillCurrent(target);
         if (stillCurrent) {
+            await waitForHostMessageRendering();
             renderImageRecord(record);
             notifyImageDebug(settings, '图片已插回聊天正文', 'success');
         } else {
@@ -1472,12 +1577,13 @@ export class ImagePipeline {
         this.updateStats({ lastImageAt: record.createdAt, imageCount: items.length, imageFloor: row.floor });
     }
 
-    async #renderCached({ snapshot, scopeHash, identity, windowInfo, recipe }) {
+    async #renderCached({ snapshot, scopeHash, identity, windowInfo, recipe, handle }) {
         const available = new Set(await this.storage.listImageKeys());
         if (!available.size) return 0;
         await this.#pruneExpiredImageCache(available);
         if (!available.size) return 0;
         const records = [];
+        let displayTextChanged = false;
         for (const floor of snapshot.floors) {
             const row = assistantRowForFloor(snapshot, floor);
             if (!row) continue;
@@ -1502,9 +1608,11 @@ export class ImagePipeline {
                         availableKeys: available
                     });
             }
+            if (await this.#syncDisplayTextAnchors(row, record, handle)) displayTextChanged = true;
             const renderable = this.#recordForCurrentRow(record, row, windowInfo);
             if (renderable) records.push(renderable);
         }
+        if (displayTextChanged) await waitForHostMessageRendering();
         records.sort((a, b) => a.messageIndex - b.messageIndex).forEach(renderImageRecord);
         return records.length;
     }
