@@ -666,7 +666,9 @@ function renderImageItem(record, item) {
         wrapper = document.createElement('span');
         wrapper.className = 'ttbm-image-inline';
         wrapper.dataset.ttbmImageSlot = slotId;
-        wrapper.dataset.ttbmImageAnchor = item.anchor || '';
+        // Keep this distinct from the persisted XML marker attribute. The
+        // marker is hidden by CSS, while this wrapper must remain visible.
+        wrapper.dataset.ttbmImageTextAnchor = item.anchor || '';
         wrapper.dataset.ttbmImageSegment = item.segmentIndex || '';
         let inserted = insertAfterImageAnchor(root, item, wrapper);
         if (item.segmentText) {

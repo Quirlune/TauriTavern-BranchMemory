@@ -6,7 +6,7 @@
   "js": "index.js",
   "css": "style.css",
   "author": "Codex",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "description": "TauriTavern branch-aware memory, status bar, call monitor, and guarded RunPod image generation.",
   "homePage": "https://tauritavern.github.io/api/",
   "auto_update": false,

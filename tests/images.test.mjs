@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { DEFAULT_SETTINGS, migrateRunPodEndpointId } from '../src/defaults.js';
 import {
@@ -52,6 +53,15 @@ test('image XML anchors are persisted at planned segments and can be stripped fo
     assert.match(anchored, /Second paragraph\.<span data-ttbm-image-anchor="anchor-two"><\/span>/);
     assert.deepEqual(imageAnchorIds(anchored), ['anchor-one', 'anchor-two']);
     assert.equal(stripImageAnchorTags(anchored), source);
+});
+
+test('persisted anchor hiding does not hide rendered image wrappers', async () => {
+    const [source, stylesheet] = await Promise.all([
+        readFile(new URL('../src/images.js', import.meta.url), 'utf8'),
+        readFile(new URL('../style.css', import.meta.url), 'utf8')
+    ]);
+    assert.doesNotMatch(source, /wrapper\.dataset\.ttbmImageAnchor\s*=/);
+    assert.match(stylesheet, /\[data-ttbm-image-anchor\]:not\(\.ttbm-image-inline\)/);
 });
 
 test('default image workflow points to the current RunPod endpoint', () => {
