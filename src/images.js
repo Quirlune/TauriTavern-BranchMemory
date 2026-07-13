@@ -19,8 +19,8 @@ const IMAGE_CACHE_RETENTION_DAYS = 90;
 const IMAGE_CACHE_RETENTION_MS = IMAGE_CACHE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const IMAGE_HARD_LIMIT = 12;
 const IMAGE_CONFIRMATION_THRESHOLD = 5;
-const TARGET_STABLE_WAITS_MS = [140, 620, 320, 320];
-const TARGET_STABLE_WAITS_MANUAL_MS = [100, 260, 500, 320];
+const TARGET_STABLE_WAITS_MS = [80, 180, 320];
+const TARGET_STABLE_WAITS_MANUAL_MS = [40, 120, 240];
 
 export function imageGenerationNeedsConfirmation(count) {
     return Math.floor(Number(count) || 0) >= IMAGE_CONFIRMATION_THRESHOLD;
@@ -675,11 +675,13 @@ export class RunPodClient {
             notifyImageDebug(config.settings, `${jobs.length} 个 RunPod 任务已连续入队，开始统一轮询`, 'success');
             for (let round = 0; round < config.maxPolls && jobs.some(job => !job.done); round += 1) {
                 if (round > 0) await delay(config.intervalMs, signal);
-                for (const job of jobs) {
-                    if (job.done) continue;
-                    const result = await this.#request(`${config.endpointUrl}/status/${encodeURIComponent(job.id)}`, {
+                const pendingJobs = jobs.filter(job => !job.done);
+                const statuses = await Promise.all(pendingJobs.map(job => this.#request(`${config.endpointUrl}/status/${encodeURIComponent(job.id)}`, {
                         headers: { 'Authorization': `Bearer ${config.apiKey}` }
-                    }, signal);
+                    }, signal)));
+                for (let index = 0; index < pendingJobs.length; index += 1) {
+                    const job = pendingJobs[index];
+                    const result = statuses[index];
                     const status = String(result.status || '').toUpperCase();
                     if (status === 'COMPLETED') {
                         job.result = this.#imageDataUrl(result);
@@ -790,6 +792,10 @@ export class ImagePipeline {
         }
         if (!settings.enabled || !settings.image?.enabled) {
             notifyImageDebug(settings, '扩展或图片模块未启用，跳过图片生成', 'warning');
+            return;
+        }
+        if (settings.image.paused) {
+            notifyImageDebug(settings, '生图已由魔法棒快捷开关暂停，跳过图片规划和付费请求', 'warning');
             return;
         }
 
@@ -918,7 +924,6 @@ export class ImagePipeline {
 
     async #captureStableTarget({ reason, requestVersion }) {
         const waits = reason === 'manual' ? TARGET_STABLE_WAITS_MANUAL_MS : TARGET_STABLE_WAITS_MS;
-        let lastSignature = '';
         for (let attempt = 0; attempt < waits.length; attempt += 1) {
             this.#throwIfCancelled(requestVersion);
             const target = this.#targetFromContext(await this.#buildContext());
@@ -929,17 +934,11 @@ export class ImagePipeline {
 
             await delay(waits[attempt], undefined);
             this.#throwIfCancelled(requestVersion);
-            const confirmed = this.#targetFromContext(await this.#buildContext());
-            if (confirmed?.signature === target.signature) {
-                notifyImageDebug(confirmed.settings, `捕获到稳定图片目标：第 ${confirmed.row.floor} 楼，${confirmed.segmentedSource.segments.length} 个分片`);
-                return confirmed;
+            if (await this.#targetStillCurrentFast(target)) {
+                notifyImageDebug(target.settings, `捕获到稳定图片目标：第 ${target.row.floor} 楼，${target.segmentedSource.segments.length} 个分片`);
+                return target;
             }
-
-            const signature = confirmed?.signature || '';
-            if (signature && signature !== lastSignature) {
-                notifyImageDebug(target.settings, `图片目标仍在被其它插件更新，等待重新确认：${attempt + 1}/${waits.length}`, 'warning');
-                lastSignature = signature;
-            }
+            notifyImageDebug(target.settings, `图片目标仍在变化，等待重新确认：${attempt + 1}/${waits.length}`, 'warning');
         }
 
         const settings = this.getSettings();
@@ -1091,9 +1090,6 @@ export class ImagePipeline {
         notifyImageDebug(settings, `调用图片规划模型：messages=${prompt.length}`);
         const rawPlan = await this.generate({ prompt, responseLength: settings.image.responseLength, apiConfig: settings.image.api });
         this.#throwIfCancelled(requestVersion);
-        if (!await this.#targetStillCurrentFast(target)) {
-            return;
-        }
         notifyImageDebug(settings, `图片规划模型返回：${String(rawPlan || '').length} 字符`);
         const planText = String(rawPlan || '').trim();
         if (imagePlanRequestsStop(planText)) {
@@ -1118,11 +1114,10 @@ export class ImagePipeline {
                 return;
             }
             this.#throwIfCancelled(requestVersion);
-            if (!await this.#targetStillCurrentFast(target)) return;
         }
 
         this.#throwIfCancelled(requestVersion);
-        if (!await this.#targetStillCurrentFast(target)) return;
+        if (!await this.#targetStillCurrent(target)) return;
         notifyImageDebug(settings, `开始 RunPod 批量入队：${plan.length} 张`);
         notifyImageProgress(settings, '正在生成图片');
         const batchResults = await this.client.generateBatch(plan.map(item => item.prompt), signal);

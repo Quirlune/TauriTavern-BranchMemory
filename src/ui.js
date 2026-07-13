@@ -76,13 +76,14 @@ function monitorRecordHtml(record) {
 }
 
 export class SettingsUi {
-    constructor({ settings, monitor, getConnectionProfiles = () => [], getCurrentCharacterInfo = () => null, onSettingsChanged, onRunNow }) {
+    constructor({ settings, monitor, getConnectionProfiles = () => [], getCurrentCharacterInfo = () => null, onSettingsChanged, onImageGenerationToggle = () => {}, onRunNow }) {
         this.settings = settings;
         this.monitor = monitor;
         this.monitorState = monitor?.snapshot() || { active: false, records: [], maxEvents: 300 };
         this.getConnectionProfiles = getConnectionProfiles;
         this.getCurrentCharacterInfo = getCurrentCharacterInfo;
         this.onSettingsChanged = onSettingsChanged;
+        this.onImageGenerationToggle = onImageGenerationToggle;
         this.onRunNow = onRunNow;
         this.stats = null;
         this.modalTab = 'memory';
@@ -90,9 +91,79 @@ export class SettingsUi {
 
     mount() {
         this.#mountSettingsEntry();
+        this.#mountWandImageToggle();
         this.#mountModal();
         this.#bindEvents();
         this.renderModal();
+    }
+
+    #mountWandImageToggle() {
+        if (document.getElementById('ttbm-image-wand-container')) {
+            this.#updateWandImageToggle();
+            return;
+        }
+        const menu = document.getElementById('extensionsMenu');
+        if (!menu) {
+            if (this.wandMenuObserver) return;
+            this.wandMenuObserver = new MutationObserver(() => {
+                if (!document.getElementById('extensionsMenu')) return;
+                this.wandMenuObserver?.disconnect();
+                this.wandMenuObserver = null;
+                this.#mountWandImageToggle();
+            });
+            this.wandMenuObserver.observe(document.body, { childList: true, subtree: true });
+            return;
+        }
+
+        const container = document.createElement('div');
+        container.id = 'ttbm-image-wand-container';
+        container.className = 'extension_container';
+        container.innerHTML = `
+            <div id="ttbm-image-generation-toggle" class="list-group-item flex-container flexGap5 interactable" role="button" tabindex="0">
+                <div class="extensionsMenuExtensionButton fa-solid" aria-hidden="true"></div>
+                <span data-ttbm-image-toggle-label></span>
+            </div>
+        `;
+        const attachmentContainer = document.getElementById('attach_file_wand_container');
+        if (attachmentContainer?.parentElement === menu) attachmentContainer.insertAdjacentElement('afterend', container);
+        else menu.prepend(container);
+
+        const toggle = container.querySelector('#ttbm-image-generation-toggle');
+        const activate = (event) => {
+            if (event.type === 'keydown' && !['Enter', ' '].includes(event.key)) return;
+            event.preventDefault();
+            if (!this.settings.enabled) {
+                globalThis.toastr?.warning?.('扩展总开关已关闭，请先在扩展设置中启用。');
+                return;
+            }
+            const paused = Boolean(this.settings.image.enabled) && !Boolean(this.settings.image.paused);
+            this.settings.image.enabled = true;
+            this.settings.image.paused = paused;
+            this.onImageGenerationToggle(paused);
+            this.#changed(true);
+            this.#updateWandImageToggle();
+            this.renderModal();
+            const message = paused ? '已暂停生图；当前任务已取消。' : '已启动生图。';
+            globalThis.toastr?.[paused ? 'warning' : 'success']?.(message);
+        };
+        toggle.addEventListener('click', activate);
+        toggle.addEventListener('keydown', activate);
+        this.#updateWandImageToggle();
+    }
+
+    #updateWandImageToggle() {
+        const toggle = document.getElementById('ttbm-image-generation-toggle');
+        if (!toggle) return;
+        const paused = !Boolean(this.settings.enabled) || !Boolean(this.settings.image.enabled) || Boolean(this.settings.image.paused);
+        const label = paused ? '启动生图' : '暂停生图';
+        toggle.querySelector('[data-ttbm-image-toggle-label]').textContent = label;
+        const icon = toggle.querySelector('.extensionsMenuExtensionButton');
+        icon.classList.toggle('fa-circle-play', paused);
+        icon.classList.toggle('fa-circle-pause', !paused);
+        toggle.classList.toggle('ttbm-image-generation-paused', paused);
+        toggle.setAttribute('aria-label', label);
+        toggle.setAttribute('aria-pressed', String(paused));
+        toggle.title = paused ? '恢复新的自动和手动生图请求' : '暂停新的生图请求，并取消当前 RunPod 队列';
     }
 
     #mountSettingsEntry() {
@@ -151,6 +222,7 @@ export class SettingsUi {
         });
         document.getElementById('ttbm-master-enabled').addEventListener('change', (event) => {
             this.settings.enabled = event.target.checked;
+            this.#updateWandImageToggle();
             this.#changed(true);
         });
 
@@ -237,6 +309,11 @@ export class SettingsUi {
             let value = target.type === 'checkbox' ? target.checked : target.value;
             if (target.type === 'number') value = Number(value);
             writePath(this.settings, path, value);
+            if (event.type === 'change' && path === 'image.paused') {
+                this.onImageGenerationToggle(Boolean(value));
+                this.#updateWandImageToggle();
+            }
+            if (event.type === 'change' && path === 'image.enabled') this.#updateWandImageToggle();
             this.#changed(event.type === 'change');
             if (event.type === 'change' && path.endsWith('.api.mode')) {
                 this.renderModal();
@@ -431,6 +508,7 @@ export class SettingsUi {
             <section class="ttbm-section">
                 <div class="ttbm-grid">
                     <label class="ttbm-check"><input type="checkbox" data-setting="image.enabled" ${image.enabled ? 'checked' : ''}>启用图片模块</label>
+                    <label class="ttbm-check"><input type="checkbox" data-setting="image.paused" ${image.paused ? 'checked' : ''}>暂停生图（缓存图片仍显示）</label>
                     <label class="ttbm-check"><input type="checkbox" data-setting="image.autoGenerate" ${image.autoGenerate ? 'checked' : ''}>AI 回复完成后自动规划并生成</label>
                     <label class="ttbm-check"><input type="checkbox" data-setting="image.debugNotifications" ${image.debugNotifications ? 'checked' : ''}>测试模式通知</label>
                     ${numberField('读取最近 N 个用户楼层', 'image.contextFloors', image.contextFloors, 1, 1000)}

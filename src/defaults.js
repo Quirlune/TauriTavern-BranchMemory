@@ -134,6 +134,7 @@ export const DEFAULT_SETTINGS = {
     },
     image: {
         enabled: false,
+        paused: false,
         autoGenerate: true,
         api: {
             mode: 'current',

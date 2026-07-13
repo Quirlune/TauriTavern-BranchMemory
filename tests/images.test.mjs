@@ -12,8 +12,11 @@ test('five or more generated images always require cost confirmation', () => {
     assert.equal(imageGenerationNeedsConfirmation(12), true);
 });
 
-test('RunPod client submits every job before polling the queue', async () => {
+test('RunPod client submits every job before polling, then checks statuses concurrently', { timeout: 1000 }, async () => {
     const calls = [];
+    let statusCallsStarted = 0;
+    let releaseStatuses;
+    const statusGate = new Promise(resolve => { releaseStatuses = resolve; });
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async (url, options = {}) => {
         calls.push({ url: String(url), options });
@@ -21,6 +24,9 @@ test('RunPod client submits every job before polling the queue', async () => {
             return response({ id: `job-${calls.filter(call => call.url.endsWith('/run')).length}`, status: 'IN_QUEUE' });
         }
         const jobId = String(url).split('/').at(-1);
+        statusCallsStarted += 1;
+        if (statusCallsStarted === 2) releaseStatuses();
+        await statusGate;
         return response({
             id: jobId,
             status: 'COMPLETED',
@@ -53,6 +59,8 @@ test('RunPod client submits every job before polling the queue', async () => {
             'https://example.invalid/v2/endpoint/status/job-2'
         ]);
         assert.equal(JSON.parse(calls[0].options.body).input.positive_prompt, 'quality, first');
+        assert.equal('negative_prompt' in JSON.parse(calls[0].options.body).input, false);
+        assert.equal(statusCallsStarted, 2);
         assert.equal(results[1].imageUrl, 'data:image/png;base64,base64-job-2');
     } finally {
         globalThis.fetch = originalFetch;

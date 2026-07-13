@@ -310,8 +310,13 @@ body.ttbm-modal-open {
 .ttbm-image-inline {
     display: block;
     width: min(100%, calc(100vw - 32px));
-    margin: 18px auto;
-    scroll-margin-bottom: 18px;
+    margin: 0 auto;
+    padding: 0;
+    border: 0;
+    outline: 0;
+    box-shadow: none;
+    background: transparent;
+    scroll-margin-bottom: 0;
     clear: both;
 }
 
@@ -321,6 +326,9 @@ body.ttbm-modal-open {
     margin: 0;
     padding: 0;
     border: 0;
+    outline: 0;
+    box-shadow: none !important;
+    appearance: none;
     background: transparent;
     color: inherit;
     cursor: zoom-in;

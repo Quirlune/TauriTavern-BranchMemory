@@ -61,6 +61,7 @@ function normalizeSettings(settings) {
     settings.image.contextFloors = clampInteger(settings.image.contextFloors, 1, 1000, 2);
     settings.image.responseLength = clampInteger(settings.image.responseLength, 32, 32000, 900);
     settings.image.maxImagesPerMessage = clampInteger(settings.image.maxImagesPerMessage, 1, 12, 3);
+    settings.image.paused = Boolean(settings.image.paused);
     settings.image.debugNotifications = Boolean(settings.image.debugNotifications);
     settings.image.cacheAsDataUrl = true;
     settings.image.runpod.width = Math.round(clampInteger(settings.image.runpod.width, 512, 1536, 1024) / 64) * 64;
@@ -231,6 +232,11 @@ export async function bootstrapExtension() {
                     })
                     .catch(error => ui.showError(error));
             }, 800);
+        },
+        onImageGenerationToggle: (paused) => {
+            if (!paused) return;
+            cancelPendingImageGeneration();
+            imagePipeline?.cancel();
         },
         onRunNow: () => {
             return enqueue({ generateMemory: true, generateStatus: true, reason: 'manual' })
@@ -410,6 +416,7 @@ export async function cleanExtensionData() {
     document.getElementById('ttbm-status-host')?.remove();
     document.getElementById('ttbm-custom-status-style')?.remove();
     document.getElementById('ttbm-image-viewer')?.remove();
+    document.getElementById('ttbm-image-wand-container')?.remove();
     document.documentElement.classList.remove('ttbm-image-viewer-open');
     document.body.classList.remove('ttbm-image-viewer-open');
     document.querySelectorAll('[data-ttbm-image-slot]').forEach(node => node.remove());
