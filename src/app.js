@@ -356,6 +356,7 @@ export async function bootstrapExtension() {
         clearHistoryCache();
         cancelPendingImageGeneration();
         imagePipeline?.cancel();
+        imagePipeline?.clearRendered();
         schedule({ generateMemory: false, generateStatus: false, reason: 'chat_changed' }, 250);
         void enqueueImages({ generate: false, reason: 'chat_changed' });
     });

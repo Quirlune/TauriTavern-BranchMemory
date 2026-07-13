@@ -727,6 +727,15 @@ function renderImageRecord(record) {
     for (const item of record.items) renderImageItem(record, item);
 }
 
+function imageRecordNeedsRender(record) {
+    const root = findMessageTextElement(record?.messageIndex);
+    if (!root || !record?.items?.length) return false;
+    return record.items.some(item => {
+        const slotId = `${record.key}.${item.id}`;
+        return !root.querySelector(`[data-ttbm-image-slot="${cssEscape(slotId)}"]`);
+    });
+}
+
 function waitForHostMessageRendering() {
     return new Promise(resolve => {
         let settled = false;
@@ -901,6 +910,9 @@ export class ImagePipeline {
         this.updateStats = updateStats;
         this.client = new RunPodClient(getSettings);
         this.activeJobs = new Map();
+        this.renderedRecords = new Map();
+        this.renderObserver = null;
+        this.restoreRenderTimer = null;
         this.renderQueue = Promise.resolve();
         this.renderVersion = 0;
         this.cancelVersion = 0;
@@ -933,7 +945,35 @@ export class ImagePipeline {
     }
 
     clearRendered() {
+        this.renderedRecords.clear();
+        clearTimeout(this.restoreRenderTimer);
+        this.restoreRenderTimer = null;
+        this.renderObserver?.disconnect();
+        this.renderObserver = null;
         document.querySelectorAll('[data-ttbm-image-slot]').forEach(node => node.remove());
+    }
+
+    #ensureRenderObserver() {
+        if (this.renderObserver || typeof globalThis.MutationObserver !== 'function') return;
+        const chatRoot = document.querySelector('#chat');
+        if (!chatRoot) return;
+        this.renderObserver = new globalThis.MutationObserver(() => {
+            if (!this.renderedRecords.size || this.restoreRenderTimer) return;
+            this.restoreRenderTimer = setTimeout(() => {
+                this.restoreRenderTimer = null;
+                for (const record of this.renderedRecords.values()) {
+                    if (imageRecordNeedsRender(record)) renderImageRecord(record);
+                }
+            }, 120);
+        });
+        this.renderObserver.observe(chatRoot, { childList: true, subtree: true });
+    }
+
+    #renderRecord(record) {
+        if (!record?.key) return;
+        this.renderedRecords.set(record.key, record);
+        this.#ensureRenderObserver();
+        renderImageRecord(record);
     }
 
     async refresh({ generate = false, regenerate = false, reason = 'refresh' } = {}) {
@@ -956,7 +996,7 @@ export class ImagePipeline {
                 if (!settings.enabled || !settings.image?.enabled) {
                     if (renderId === this.renderVersion) {
                         notifyImageDebug(settings, '扩展或图片模块未启用，移除现有图片占位', 'warning');
-                        document.querySelectorAll('[data-ttbm-image-slot]').forEach(node => node.remove());
+                        this.clearRendered();
                     }
                     return;
                 }
@@ -968,7 +1008,7 @@ export class ImagePipeline {
                 }
 
                 await waitForHostMessageRendering();
-                document.querySelectorAll('[data-ttbm-image-slot]').forEach(node => node.remove());
+                this.clearRendered();
                 notifyImageDebug(settings, '开始回渲染已有图片缓存');
                 const renderedCacheCount = await this.#renderCached(context);
                 notifyImageDebug(settings, `缓存回渲染完成：${renderedCacheCount} 条记录`);
@@ -1016,7 +1056,7 @@ export class ImagePipeline {
                     : null;
                 await waitForHostMessageRendering();
                 notifyImageDebug(settings, `命中图片缓存：第 ${target.row.floor} 楼，${renderable.items.length} 张`, 'success');
-                renderImageRecord(renderable);
+                this.#renderRecord(renderable);
                 return;
             }
             await this.storage.deleteImage(existing.key).catch(() => undefined);
@@ -1273,6 +1313,11 @@ export class ImagePipeline {
             clearHistoryCache(target.handle);
         }
         const keys = [...availableKeys].filter(key => prefixes.some(prefix => String(key).startsWith(prefix)));
+        for (const renderedKey of this.renderedRecords.keys()) {
+            if (prefixes.some(prefix => String(renderedKey).startsWith(prefix))) {
+                this.renderedRecords.delete(renderedKey);
+            }
+        }
         for (const key of keys) {
             await this.storage.deleteImage(key);
         }
@@ -1568,7 +1613,7 @@ export class ImagePipeline {
         const stillCurrent = requestVersion === this.cancelVersion && await this.#targetStillCurrent(target);
         if (stillCurrent) {
             await waitForHostMessageRendering();
-            renderImageRecord(record);
+            this.#renderRecord(record);
             notifyImageDebug(settings, '图片已插回聊天正文', 'success');
         } else {
             notifyImageDebug(settings, '消息已不在前台分支；图片仅保存到对应分支缓存，不插入当前界面', 'warning');
@@ -1613,7 +1658,7 @@ export class ImagePipeline {
             if (renderable) records.push(renderable);
         }
         if (displayTextChanged) await waitForHostMessageRendering();
-        records.sort((a, b) => a.messageIndex - b.messageIndex).forEach(renderImageRecord);
+        records.sort((a, b) => a.messageIndex - b.messageIndex).forEach(record => this.#renderRecord(record));
         return records.length;
     }
 }

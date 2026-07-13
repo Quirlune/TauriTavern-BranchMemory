@@ -74,6 +74,12 @@ test('persisted anchor hiding does not hide rendered image wrappers', async () =
     assert.match(stylesheet, /\[data-ttbm-image-anchor\]:not\(\.ttbm-image-inline\)/);
 });
 
+test('late host regex rerenders are guarded by cached image restoration', async () => {
+    const source = await readFile(new URL('../src/images.js', import.meta.url), 'utf8');
+    assert.match(source, /new globalThis\.MutationObserver/);
+    assert.match(source, /if \(imageRecordNeedsRender\(record\)\) renderImageRecord\(record\)/);
+});
+
 test('default image workflow points to the current RunPod endpoint', () => {
     assert.equal(DEFAULT_SETTINGS.image.runpod.endpointId, 'quvu6qr8iey7lw');
     assert.equal(migrateRunPodEndpointId('s7bx1d50mv9zkj'), 'quvu6qr8iey7lw');
