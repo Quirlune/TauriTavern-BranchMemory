@@ -8,7 +8,7 @@ import {
 } from '/script.js';
 import { ConnectionManagerRequestService } from '/scripts/extensions/shared.js';
 import { AssistantGenerationGate, clampInteger, deepMerge, promptEntriesUseMacros } from './core.js';
-import { DEFAULT_SETTINGS } from './defaults.js';
+import { DEFAULT_SETTINGS, migrateRunPodEndpointId } from './defaults.js';
 import { BranchMemoryEngine } from './engine.js';
 import { characterPromptInfo, clearHistoryCache } from './history.js';
 import { ImagePipeline } from './images.js';
@@ -70,7 +70,7 @@ function normalizeSettings(settings) {
     settings.image.runpod.pollIntervalMs = clampInteger(settings.image.runpod.pollIntervalMs, 500, 30000, 1000);
     settings.image.runpod.maxPolls = clampInteger(settings.image.runpod.maxPolls, 1, 1800, 300);
     settings.image.runpod.apiBase = String(settings.image.runpod.apiBase || 'https://api.runpod.ai/v2').replace(/\/+$/, '');
-    settings.image.runpod.endpointId = String(settings.image.runpod.endpointId || '').trim();
+    settings.image.runpod.endpointId = migrateRunPodEndpointId(settings.image.runpod.endpointId);
     return settings;
 }
 

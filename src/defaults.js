@@ -6,6 +6,13 @@ export const LARGE_TABLE = 'memory-large-v1';
 export const STATUS_TABLE = 'status-v1';
 export const IMAGE_TABLE = 'image-v1';
 export const CHAT_RUNTIME_KEY = 'runtime-v1';
+export const RUNPOD_ENDPOINT_ID = 'quvu6qr8iey7lw';
+export const LEGACY_RUNPOD_ENDPOINT_ID = 's7bx1d50mv9zkj';
+
+export function migrateRunPodEndpointId(value) {
+    const endpointId = String(value || '').trim();
+    return endpointId === LEGACY_RUNPOD_ENDPOINT_ID ? RUNPOD_ENDPOINT_ID : endpointId;
+}
 
 export const DEFAULT_SETTINGS = {
     version: 2,
@@ -173,7 +180,7 @@ export const DEFAULT_SETTINGS = {
         runpod: {
             apiKey: '',
             apiBase: 'https://api.runpod.ai/v2',
-            endpointId: 's7bx1d50mv9zkj',
+            endpointId: RUNPOD_ENDPOINT_ID,
             width: 1024,
             height: 1280,
             seed: 101,
