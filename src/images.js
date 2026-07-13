@@ -12,7 +12,7 @@ import {
     statusRecordOutputs,
     transcriptForFloorRange
 } from './core.js';
-import { characterPromptInfo, chatIdentity, locateLatestAssistantMessage, readFullHistory, scopeHashForRef } from './history.js';
+import { characterPromptInfo, chatIdentity, clearHistoryCache, locateLatestAssistantMessage, readFullHistory, scopeHashForRef } from './history.js';
 
 const IMAGE_GENERATION_REASONS = new Set(['assistant_output', 'manual']);
 const IMAGE_CACHE_RETENTION_DAYS = 90;
@@ -21,6 +21,9 @@ const IMAGE_HARD_LIMIT = 12;
 const IMAGE_CONFIRMATION_THRESHOLD = 5;
 const TARGET_STABLE_WAITS_MS = [80, 180, 320];
 const TARGET_STABLE_WAITS_MANUAL_MS = [40, 120, 240];
+const IMAGE_ANCHOR_ATTRIBUTE = 'data-ttbm-image-anchor';
+const IMAGE_ANCHOR_TAG_PATTERN = /<span\b[^>]*\bdata-ttbm-image-anchor\s*=\s*(?:"[^"]*"|'[^']*')[^>]*>\s*<\/span\s*>/gi;
+const IMAGE_ANCHOR_ID_PATTERN = /<span\b[^>]*\bdata-ttbm-image-anchor\s*=\s*(?:"([^"]+)"|'([^']+)')[^>]*>\s*<\/span\s*>/gi;
 
 export function imageGenerationNeedsConfirmation(count) {
     return Math.floor(Number(count) || 0) >= IMAGE_CONFIRMATION_THRESHOLD;
@@ -30,10 +33,107 @@ export function imageCachePrefix({ scopeHash, floor, chain }) {
     return `v1.${scopeHash}.${Math.max(0, Number(floor) || 0)}.${chain}.`;
 }
 
+export function stripImageAnchorTags(value) {
+    return String(value ?? '').replace(IMAGE_ANCHOR_TAG_PATTERN, '');
+}
+
+export function imageAnchorIds(value) {
+    const ids = [];
+    for (const match of String(value ?? '').matchAll(IMAGE_ANCHOR_ID_PATTERN)) {
+        const id = String(match[1] || match[2] || '').trim();
+        if (id) ids.push(id);
+    }
+    return ids;
+}
+
+export function imageMessageIdentity({ chatKey, floor, message, messageIndex = 0 }) {
+    const sendDate = String(message?.send_date || '').trim();
+    const swipeId = Number.isFinite(Number(message?.swipe_id)) ? Number(message.swipe_id) : 0;
+    const stableMessagePart = sendDate || `index:${Math.max(0, Number(messageIndex) || 0)}`;
+    return hashString([
+        String(chatKey || 'unknown-chat'),
+        Math.max(0, Number(floor) || 0),
+        stableMessagePart,
+        swipeId,
+        String(message?.name || ''),
+        roleOf(message)
+    ].join('\u001f'));
+}
+
+export function imageMessageCachePrefix(messageIdentity) {
+    return `v2.${messageIdentity}.`;
+}
+
+function imageMessageCacheKey(messageIdentity, recipe) {
+    return `${imageMessageCachePrefix(messageIdentity)}${recipe}`;
+}
+
+function imageAnchorTag(anchorId) {
+    return `<span ${IMAGE_ANCHOR_ATTRIBUTE}="${String(anchorId)}"></span>`;
+}
+
+function occurrenceEndIndex(source, needle, occurrence = 1) {
+    if (!needle) return -1;
+    let seen = 0;
+    let searchFrom = 0;
+    while (searchFrom <= source.length) {
+        const index = source.indexOf(needle, searchFrom);
+        if (index < 0) return -1;
+        seen += 1;
+        if (seen === occurrence) return index + needle.length;
+        searchFrom = index + Math.max(1, needle.length);
+    }
+    return -1;
+}
+
+export function insertImageAnchorTags(messageText, items, segmentedSource) {
+    const clean = stripImageAnchorTags(messageText);
+    const fallbackSegments = segmentImageSource(clean);
+    const insertions = new Map();
+
+    for (const item of items || []) {
+        if (!item?.anchorId) continue;
+        const index = Math.max(1, Number(item.segmentIndex) || 1) - 1;
+        const plannedSegment = segmentedSource?.segments?.[index];
+        const fallbackSegment = fallbackSegments.segments[index];
+        let insertionIndex = occurrenceEndIndex(
+            clean,
+            plannedSegment?.text || fallbackSegment?.text || '',
+            plannedSegment?.occurrence || fallbackSegment?.occurrence || 1
+        );
+        if (insertionIndex < 0 && fallbackSegment?.text) {
+            insertionIndex = occurrenceEndIndex(clean, fallbackSegment.text, fallbackSegment.occurrence || 1);
+        }
+        if (segmentedSource?.contentWrapped && index === segmentedSource.segments.length - 1) {
+            const closingIndex = clean.toLowerCase().lastIndexOf('</content>');
+            if (closingIndex >= 0) insertionIndex = closingIndex + '</content>'.length;
+        }
+        if (insertionIndex < 0) insertionIndex = clean.length;
+        const tags = insertions.get(insertionIndex) || [];
+        tags.push(imageAnchorTag(item.anchorId));
+        insertions.set(insertionIndex, tags);
+    }
+
+    let output = clean;
+    const positions = [...insertions.keys()].sort((left, right) => right - left);
+    for (const position of positions) {
+        output = `${output.slice(0, position)}${insertions.get(position).join('')}${output.slice(position)}`;
+    }
+    return output;
+}
+
 function latestAssistantRow(snapshot) {
     for (let index = snapshot.rows.length - 1; index >= 0; index -= 1) {
         const row = snapshot.rows[index];
         if (row.role === 'assistant' && row.floor > 0) return row;
+    }
+    return null;
+}
+
+function assistantRowForFloor(snapshot, floor) {
+    for (let index = floor.endIndex; index >= floor.startIndex; index -= 1) {
+        const row = snapshot.rows[index];
+        if (row?.role === 'assistant') return row;
     }
     return null;
 }
@@ -514,6 +614,14 @@ function insertAfterSegment(root, item, node) {
     return insertAfterMappedPosition(range?.end, node);
 }
 
+function insertAfterImageAnchor(root, item, node) {
+    if (!item.anchorId) return false;
+    const anchor = root.querySelector?.(`[${IMAGE_ANCHOR_ATTRIBUTE}="${cssEscape(item.anchorId)}"]`);
+    if (!anchor?.parentNode) return false;
+    anchor.insertAdjacentElement('afterend', node);
+    return true;
+}
+
 function insertAtAnchor(root, anchor, occurrence, placement, node) {
     let seen = 0;
     for (const textNode of textNodeWalker(root)) {
@@ -560,9 +668,9 @@ function renderImageItem(record, item) {
         wrapper.dataset.ttbmImageSlot = slotId;
         wrapper.dataset.ttbmImageAnchor = item.anchor || '';
         wrapper.dataset.ttbmImageSegment = item.segmentIndex || '';
-        let inserted = false;
+        let inserted = insertAfterImageAnchor(root, item, wrapper);
         if (item.segmentText) {
-            inserted = insertAfterSegment(root, item, wrapper);
+            inserted ||= insertAfterSegment(root, item, wrapper);
         }
         if (!inserted && item.anchor) {
             inserted = insertAtAnchor(root, item.anchor, item.occurrence || 1, item.placement || 'after', wrapper);
@@ -733,9 +841,10 @@ export class RunPodClient {
 }
 
 export class ImagePipeline {
-    constructor({ storage, getSettings, generate, onError = () => {}, updateStats = () => {} }) {
+    constructor({ storage, getSettings, persistMessageText = null, generate, onError = () => {}, updateStats = () => {} }) {
         this.storage = storage;
         this.getSettings = getSettings;
+        this.persistMessageText = persistMessageText;
         this.generate = generate;
         this.onError = onError;
         this.updateStats = updateStats;
@@ -847,9 +956,14 @@ export class ImagePipeline {
 
         const existing = await this.#getCachedImageForTarget(target);
         if (existing) {
-            notifyImageDebug(settings, `命中图片缓存：第 ${target.row.floor} 楼，${existing.items?.length || 0} 张`, 'success');
-            renderImageRecord(existing);
-            return;
+            const renderable = this.#recordForCurrentRow(existing, target.row, target.windowInfo);
+            if (renderable) {
+                notifyImageDebug(settings, `命中图片缓存：第 ${target.row.floor} 楼，${renderable.items.length} 张`, 'success');
+                renderImageRecord(renderable);
+                return;
+            }
+            await this.storage.deleteImage(existing.key).catch(() => undefined);
+            notifyImageDebug(settings, '图片缓存缺少对应 XML 锚点，按新图片重新生成', 'warning');
         }
         if (!settings.image.autoGenerate && reason !== 'manual') {
             notifyImageDebug(settings, '自动生成关闭，未命中缓存，跳过新图片生成');
@@ -893,6 +1007,9 @@ export class ImagePipeline {
         const identity = chatIdentity(ref);
         const scopeHash = scopeHashForRef(ref);
         const snapshot = await readFullHistory(handle);
+        const windowInfo = typeof this.storage.currentWindowInfo === 'function'
+            ? await this.storage.currentWindowInfo()
+            : { windowStartIndex: 0, windowLength: snapshot.messages.length };
         const character = characterPromptRecord(settings, characterPromptInfo(ref));
         const runtime = await this.storage.getChatRuntime(handle) || {};
         const statusOutputs = settings.status?.enabled === false
@@ -922,7 +1039,7 @@ export class ImagePipeline {
                 positivePromptPrefix: settings.image.runpod.positivePromptPrefix
             }
         });
-        return { settings, handle, ref, identity, scopeHash, snapshot, character, statusOutputs, recipe };
+        return { settings, handle, ref, identity, scopeHash, snapshot, windowInfo, character, statusOutputs, recipe };
     }
 
     #targetFromContext(context) {
@@ -937,7 +1054,8 @@ export class ImagePipeline {
             return null;
         }
 
-        const source = applyRegexRules(String(row.message?.mes || ''), settings.image.inputRegex).trim();
+        const messageText = String(row.message?.mes || '');
+        const source = applyRegexRules(stripImageAnchorTags(messageText), settings.image.inputRegex).trim();
         if (!source) {
             notifyImageDebug(settings, '正文提取后为空，跳过图片规划', 'warning');
             return null;
@@ -948,16 +1066,24 @@ export class ImagePipeline {
             notifyImageDebug(settings, '正文分片为空，跳过图片规划', 'warning');
             return null;
         }
-        const key = makeCacheKey({ scopeHash, floor: row.floor, chain: floorInfo.chain, recipe });
+        const messageIdentity = imageMessageIdentity({
+            chatKey: context.identity,
+            floor: row.floor,
+            message: row.message,
+            messageIndex: row.index
+        });
+        const key = imageMessageCacheKey(messageIdentity, recipe);
         return {
             ...context,
             row,
             floorInfo,
             key,
+            messageIdentity,
+            messageText,
             source,
             sourceHash,
             segmentedSource,
-            signature: `${context.identity}:${row.index}:${row.floor}:${floorInfo.chain}:${sourceHash}`
+            signature: `${context.identity}:${row.index}:${row.floor}:${messageIdentity}:${sourceHash}`
         };
     }
 
@@ -994,9 +1120,15 @@ export class ImagePipeline {
         const hit = await locateLatestAssistantMessage(target.handle);
         if (hit?.message) {
             const hitIndex = Number(hit.index);
-            const currentSource = applyRegexRules(String(hit.message?.mes || ''), target.settings.image.inputRegex).trim();
+            const currentSource = applyRegexRules(stripImageAnchorTags(hit.message?.mes || ''), target.settings.image.inputRegex).trim();
+            const currentIdentity = imageMessageIdentity({
+                chatKey: target.identity,
+                floor: target.row.floor,
+                message: hit.message,
+                messageIndex: hitIndex
+            });
             if (Number.isFinite(hitIndex) && hitIndex !== target.row.index) return false;
-            return hashString(currentSource) === target.sourceHash;
+            return currentIdentity === target.messageIdentity && hashString(currentSource) === target.sourceHash;
         }
 
         return this.#targetStillCurrent(target);
@@ -1010,8 +1142,14 @@ export class ImagePipeline {
         const currentSnapshot = await readFullHistory(target.handle);
         const currentFloorInfo = getFloor(currentSnapshot, target.row.floor);
         const currentRow = currentSnapshot.rows[target.row.index];
-        const currentSource = applyRegexRules(String(currentRow?.message?.mes || ''), target.settings.image.inputRegex).trim();
-        if (!currentFloorInfo || currentFloorInfo.chain !== target.floorInfo.chain || hashString(currentSource) !== target.sourceHash) {
+        const currentSource = applyRegexRules(stripImageAnchorTags(currentRow?.message?.mes || ''), target.settings.image.inputRegex).trim();
+        const currentIdentity = imageMessageIdentity({
+            chatKey: target.identity,
+            floor: target.row.floor,
+            message: currentRow?.message,
+            messageIndex: target.row.index
+        });
+        if (!currentFloorInfo || currentIdentity !== target.messageIdentity || hashString(currentSource) !== target.sourceHash) {
             notifyImageDebug(target.settings, '当前消息已变化，丢弃旧图片任务结果', 'warning');
             return false;
         }
@@ -1021,6 +1159,16 @@ export class ImagePipeline {
     async #getCachedImageForTarget(target, availableKeys = null) {
         const exact = await this.#getFreshImage(target.key, { availableKeys });
         if (exact) return exact;
+        const anchored = await this.#getLatestImageForMessageIdentity(target.messageIdentity, availableKeys);
+        if (anchored) return anchored;
+        const legacyKey = makeCacheKey({
+            scopeHash: target.scopeHash,
+            floor: target.row.floor,
+            chain: target.floorInfo.chain,
+            recipe: target.recipe
+        });
+        const legacyExact = await this.#getFreshImage(legacyKey, { availableKeys });
+        if (legacyExact) return legacyExact;
         return this.#getLatestImageForFloorChain({
             scopeHash: target.scopeHash,
             floor: target.row.floor,
@@ -1031,17 +1179,35 @@ export class ImagePipeline {
 
     async #clearImagesForTarget(target) {
         const availableKeys = new Set(await this.storage.listImageKeys());
-        const prefix = imageCachePrefix({
+        const prefixes = [imageMessageCachePrefix(target.messageIdentity), imageCachePrefix({
             scopeHash: target.scopeHash,
             floor: target.row.floor,
             chain: target.floorInfo.chain
-        });
-        const keys = [...availableKeys].filter(key => String(key).startsWith(prefix));
+        })];
+        const cleanMessageText = stripImageAnchorTags(target.messageText);
+        let renderMessageIndex = target.row.index;
+        if (cleanMessageText !== target.messageText) {
+            if (typeof this.persistMessageText !== 'function') {
+                throw new Error('当前宿主不支持持久化图片 XML 锚点。');
+            }
+            const persisted = await this.persistMessageText({
+                absoluteIndex: target.row.index,
+                expectedText: target.messageText,
+                text: cleanMessageText
+            });
+            renderMessageIndex = Number.isFinite(Number(persisted?.renderMessageIndex))
+                ? Number(persisted.renderMessageIndex)
+                : renderMessageIndex;
+            target.messageText = cleanMessageText;
+            target.row.message.mes = cleanMessageText;
+            clearHistoryCache(target.handle);
+        }
+        const keys = [...availableKeys].filter(key => prefixes.some(prefix => String(key).startsWith(prefix)));
         for (const key of keys) {
             await this.storage.deleteImage(key);
         }
 
-        const root = findMessageTextElement(target.row.index);
+        const root = findMessageTextElement(renderMessageIndex);
         root?.querySelectorAll?.('[data-ttbm-image-slot]').forEach(node => node.remove());
         notifyImageDebug(target.settings, `已清理最后一条 AI 消息的图片缓存 ${keys.length} 条，开始重新规划`, 'success');
     }
@@ -1094,6 +1260,38 @@ export class ImagePipeline {
         return records[0] || null;
     }
 
+    async #getLatestImageForMessageIdentity(messageIdentity, availableKeys = null) {
+        const keys = availableKeys || new Set(await this.storage.listImageKeys());
+        const prefix = imageMessageCachePrefix(messageIdentity);
+        const candidates = [...keys].filter(key => String(key).startsWith(prefix));
+        if (!candidates.length) return null;
+
+        const records = [];
+        const now = Date.now();
+        for (const key of candidates) {
+            const record = await this.#getFreshImage(key, { now, availableKeys: keys });
+            if (record) records.push(record);
+        }
+        records.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+        return records[0] || null;
+    }
+
+    #recordForCurrentRow(record, row, windowInfo) {
+        if (!record || !row) return null;
+        let items = Array.isArray(record.items) ? record.items : [];
+        if (record.version >= 2 || items.some(item => item.anchorId)) {
+            const anchors = new Set(imageAnchorIds(row.message?.mes || ''));
+            items = items.filter(item => item.anchorId && anchors.has(item.anchorId));
+        }
+        if (!items.length) return null;
+        const windowStartIndex = Math.max(0, Number(windowInfo?.windowStartIndex) || 0);
+        return {
+            ...record,
+            messageIndex: Math.max(0, Number(row.index) - windowStartIndex),
+            items
+        };
+    }
+
     async #generateTarget({ target, controller, reason, requestVersion }) {
         const {
             settings,
@@ -1103,6 +1301,8 @@ export class ImagePipeline {
             row,
             floorInfo,
             key,
+            messageIdentity,
+            messageText,
             recipe,
             scopeHash,
             source,
@@ -1119,14 +1319,14 @@ export class ImagePipeline {
             body_segments: segmentedSource.formatted,
             segmented_body: segmentedSource.formatted,
             source_segments: segmentedSource.formatted,
-            assistant: String(row.message?.mes || ''),
-            chat: transcriptForFloorRange(snapshot, startFloor, row.floor, []),
+            assistant: stripImageAnchorTags(row.message?.mes || ''),
+            chat: stripImageAnchorTags(transcriptForFloorRange(snapshot, startFloor, row.floor, [])),
             floor: row.floor,
             floor_start: startFloor,
             floor_end: row.floor,
             total_floors: snapshot.totalFloors,
             last_user: lastMessage(snapshot, 'user'),
-            last_assistant: lastMessage(snapshot, 'assistant'),
+            last_assistant: stripImageAnchorTags(lastMessage(snapshot, 'assistant')),
             max_images: settings.image.maxImagesPerMessage,
             character_prompt: character.prompt,
             appearance_prompt: character.prompt,
@@ -1177,13 +1377,20 @@ export class ImagePipeline {
         notifyImageDebug(settings, `开始 RunPod 批量入队：${plan.length} 张`);
         notifyImageProgress(settings, '正在生成图片');
         const batchResults = await this.client.generateBatch(plan.map(item => item.prompt), signal);
+        this.#throwIfCancelled(requestVersion);
+        if (!await this.#targetStillCurrent(target)) {
+            notifyImageProgress(settings, '正文在生图期间已变化，结果未绑定到旧消息', 'warning');
+            return;
+        }
         const items = plan.map((item, index) => {
             const segment = segmentedSource.segments[item.segmentIndex - 1];
             const generated = batchResults[index];
             const slotId = hashString(`${key}:${item.id}:${item.segmentIndex}:${item.prompt}`);
+            const anchorId = hashString(`${messageIdentity}:${generated.jobId}:${index}:${slotId}`);
             return {
                 ...item,
                 id: slotId,
+                anchorId,
                 segmentText: segment.text,
                 segmentOccurrence: segment.occurrence,
                 contentWrapped: segmentedSource.contentWrapped,
@@ -1203,10 +1410,11 @@ export class ImagePipeline {
 
         const createdAt = new Date().toISOString();
         const record = {
-            version: 1,
+            version: 2,
             kind: 'image',
             key,
             scopeHash,
+            messageIdentity,
             recipe,
             floor: row.floor,
             messageIndex: row.index,
@@ -1218,6 +1426,38 @@ export class ImagePipeline {
             reason
         };
         await this.storage.setImage(key, record);
+        const anchoredMessageText = insertImageAnchorTags(messageText, items, segmentedSource);
+        try {
+            if (typeof this.persistMessageText !== 'function') {
+                throw new Error('当前宿主不支持持久化图片 XML 锚点。');
+            }
+            const persisted = await this.persistMessageText({
+                absoluteIndex: row.index,
+                expectedText: messageText,
+                text: anchoredMessageText
+            });
+            if (Number.isFinite(Number(persisted?.renderMessageIndex))) {
+                record.messageIndex = Number(persisted.renderMessageIndex);
+            }
+            target.messageText = anchoredMessageText;
+            row.message.mes = anchoredMessageText;
+            clearHistoryCache(target.handle);
+            await this.storage.setImage(key, record);
+        } catch (error) {
+            await this.storage.deleteImage(key).catch(() => undefined);
+            if (target.messageText === anchoredMessageText && typeof this.persistMessageText === 'function') {
+                await this.persistMessageText({
+                    absoluteIndex: row.index,
+                    expectedText: anchoredMessageText,
+                    text: messageText
+                }).then(() => {
+                    target.messageText = messageText;
+                    row.message.mes = messageText;
+                    clearHistoryCache(target.handle);
+                }).catch(() => undefined);
+            }
+            throw error;
+        }
         notifyImageDebug(settings, `图片记录已在本地保存 90 天：第 ${row.floor} 楼，${items.length} 张`, 'success');
         const stillCurrent = requestVersion === this.cancelVersion && await this.#targetStillCurrent(target);
         if (stillCurrent) {
@@ -1230,23 +1470,38 @@ export class ImagePipeline {
         this.updateStats({ lastImageAt: record.createdAt, imageCount: items.length, imageFloor: row.floor });
     }
 
-    async #renderCached({ snapshot, scopeHash, recipe }) {
+    async #renderCached({ snapshot, scopeHash, identity, windowInfo, recipe }) {
         const available = new Set(await this.storage.listImageKeys());
         if (!available.size) return 0;
         await this.#pruneExpiredImageCache(available);
         if (!available.size) return 0;
         const records = [];
         for (const floor of snapshot.floors) {
-            const key = makeCacheKey({ scopeHash, floor: floor.number, chain: floor.chain, recipe });
-            const record = available.has(key)
-                ? await this.storage.getImage(key)
-                : await this.#getLatestImageForFloorChain({
-                    scopeHash,
-                    floor: floor.number,
-                    chain: floor.chain,
-                    availableKeys: available
-                });
-            if (record) records.push(record);
+            const row = assistantRowForFloor(snapshot, floor);
+            if (!row) continue;
+            const messageIdentity = imageMessageIdentity({
+                chatKey: identity,
+                floor: floor.number,
+                message: row.message,
+                messageIndex: row.index
+            });
+            const anchoredKey = imageMessageCacheKey(messageIdentity, recipe);
+            let record = available.has(anchoredKey)
+                ? await this.storage.getImage(anchoredKey)
+                : await this.#getLatestImageForMessageIdentity(messageIdentity, available);
+            if (!record) {
+                const legacyKey = makeCacheKey({ scopeHash, floor: floor.number, chain: floor.chain, recipe });
+                record = available.has(legacyKey)
+                    ? await this.storage.getImage(legacyKey)
+                    : await this.#getLatestImageForFloorChain({
+                        scopeHash,
+                        floor: floor.number,
+                        chain: floor.chain,
+                        availableKeys: available
+                    });
+            }
+            const renderable = this.#recordForCurrentRow(record, row, windowInfo);
+            if (renderable) records.push(renderable);
         }
         records.sort((a, b) => a.messageIndex - b.messageIndex).forEach(renderImageRecord);
         return records.length;

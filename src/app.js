@@ -1,10 +1,13 @@
 import {
+    chat,
     eventSource,
     event_types,
     extension_prompt_roles,
     extension_prompt_types,
     generateRaw,
-    setExtensionPrompt
+    saveChatConditional,
+    setExtensionPrompt,
+    updateMessageBlock
 } from '/script.js';
 import { ConnectionManagerRequestService } from '/scripts/extensions/shared.js';
 import { AssistantGenerationGate, clampInteger, deepMerge, promptEntriesUseMacros } from './core.js';
@@ -144,6 +147,14 @@ export async function bootstrapExtension() {
         return imagePipeline.enqueue(options);
     };
 
+    const scheduleCachedImageRender = (reason, delay = 450) => {
+        const timer = setTimeout(() => {
+            imageGenerationTimers.delete(timer);
+            void enqueueImages({ generate: false, reason });
+        }, delay);
+        imageGenerationTimers.add(timer);
+    };
+
     const cancelPendingImageGeneration = () => {
         imageGenerationCancelVersion += 1;
         for (const timer of imageGenerationTimers) clearTimeout(timer);
@@ -280,6 +291,21 @@ export async function bootstrapExtension() {
     imagePipeline = new ImagePipeline({
         storage,
         getSettings: () => settings,
+        persistMessageText: async ({ absoluteIndex, expectedText, text }) => {
+            const windowInfo = await storage.currentWindowInfo();
+            const localIndex = Number(absoluteIndex) - Number(windowInfo?.windowStartIndex || 0);
+            const message = chat[localIndex];
+            if (!message || localIndex < 0) {
+                throw new Error('图片锚点目标已不在当前聊天窗口中。');
+            }
+            if (String(message.mes || '') !== String(expectedText || '')) {
+                throw new Error('写入图片锚点前消息已变化，已停止保存，避免锚点写入错误消息。');
+            }
+            message.mes = String(text || '');
+            updateMessageBlock(localIndex, message);
+            await saveChatConditional();
+            return { renderMessageIndex: localIndex };
+        },
         generate: async ({ prompt, responseLength, apiConfig }) => {
             if (apiConfig?.mode === 'connection_profile') {
                 const profileId = String(apiConfig.connectionProfileId || '').trim();
@@ -359,6 +385,7 @@ export async function bootstrapExtension() {
         cancelPendingImageGeneration();
         imagePipeline?.cancel();
         imagePipeline?.clearRendered();
+        scheduleCachedImageRender('message_edited');
         schedule({ generateMemory: true, generateStatus: false, reason: 'message_edited' }, 500);
     });
     eventSource.on(event_types.MESSAGE_DELETED, () => {

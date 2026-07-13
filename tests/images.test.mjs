@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { DEFAULT_SETTINGS, migrateRunPodEndpointId } from '../src/defaults.js';
-import { imageCachePrefix, imageGenerationNeedsConfirmation, RunPodClient } from '../src/images.js';
+import {
+    imageAnchorIds,
+    imageCachePrefix,
+    imageGenerationNeedsConfirmation,
+    imageMessageCachePrefix,
+    imageMessageIdentity,
+    insertImageAnchorTags,
+    RunPodClient,
+    stripImageAnchorTags
+} from '../src/images.js';
+import { segmentImageSource } from '../src/core.js';
 
 function response(body, ok = true, status = 200) {
     return { ok, status, json: async () => body };
@@ -19,6 +29,29 @@ test('image regeneration cache prefix covers every recipe for the same branch fl
     assert.equal('v1.scope.7.chain.recipe-a'.startsWith(prefix), true);
     assert.equal('v1.scope.7.other.recipe-a'.startsWith(prefix), false);
     assert.equal('v1.scope.8.chain.recipe-a'.startsWith(prefix), false);
+});
+
+test('persistent image identity survives edits but changes on swipe', () => {
+    const base = { is_user: false, name: 'AI', mes: 'original', send_date: 'stable-date', swipe_id: 2 };
+    const edited = { ...base, mes: 'edited a few words' };
+    const swiped = { ...edited, swipe_id: 3 };
+    const identity = imageMessageIdentity({ chatKey: 'character:1:file', floor: 7, message: base, messageIndex: 8 });
+    assert.equal(imageMessageIdentity({ chatKey: 'character:1:file', floor: 7, message: edited, messageIndex: 8 }), identity);
+    assert.notEqual(imageMessageIdentity({ chatKey: 'character:1:file', floor: 7, message: swiped, messageIndex: 8 }), identity);
+    assert.equal(imageMessageCachePrefix(identity), `v2.${identity}.`);
+});
+
+test('image XML anchors are persisted at planned segments and can be stripped for planning', () => {
+    const source = 'First paragraph.\n\nSecond paragraph.';
+    const segmented = segmentImageSource(source);
+    const anchored = insertImageAnchorTags(source, [
+        { anchorId: 'anchor-one', segmentIndex: 1 },
+        { anchorId: 'anchor-two', segmentIndex: 2 }
+    ], segmented);
+    assert.match(anchored, /First paragraph\.<span data-ttbm-image-anchor="anchor-one"><\/span>/);
+    assert.match(anchored, /Second paragraph\.<span data-ttbm-image-anchor="anchor-two"><\/span>/);
+    assert.deepEqual(imageAnchorIds(anchored), ['anchor-one', 'anchor-two']);
+    assert.equal(stripImageAnchorTags(anchored), source);
 });
 
 test('default image workflow points to the current RunPod endpoint', () => {

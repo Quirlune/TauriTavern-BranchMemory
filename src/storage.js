@@ -36,6 +36,10 @@ export class StorageGateway {
         return this.host.api.chat.current.ref();
     }
 
+    async currentWindowInfo() {
+        return this.host.api.chat.current.windowInfo();
+    }
+
     async loadSettings() {
         const result = await this.globalStore.tryGetJson({
             namespace: EXTENSION_NAMESPACE,

@@ -320,6 +320,10 @@ body.ttbm-modal-open {
     clear: both;
 }
 
+#chat .mes [data-ttbm-image-anchor] {
+    display: none !important;
+}
+
 #chat .mes .ttbm-image-open {
     display: block;
     width: 100%;
