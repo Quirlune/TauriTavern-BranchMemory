@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { DEFAULT_SETTINGS, migrateRunPodEndpointId } from '../src/defaults.js';
 import { imageGenerationNeedsConfirmation, RunPodClient } from '../src/images.js';
 
 function response(body, ok = true, status = 200) {
@@ -10,6 +11,12 @@ test('five or more generated images always require cost confirmation', () => {
     assert.equal(imageGenerationNeedsConfirmation(4), false);
     assert.equal(imageGenerationNeedsConfirmation(5), true);
     assert.equal(imageGenerationNeedsConfirmation(12), true);
+});
+
+test('default image workflow points to the current RunPod endpoint', () => {
+    assert.equal(DEFAULT_SETTINGS.image.runpod.endpointId, 'quvu6qr8iey7lw');
+    assert.equal(migrateRunPodEndpointId('s7bx1d50mv9zkj'), 'quvu6qr8iey7lw');
+    assert.equal(migrateRunPodEndpointId('custom-endpoint'), 'custom-endpoint');
 });
 
 test('RunPod client submits every job before polling, then checks statuses concurrently', { timeout: 1000 }, async () => {
