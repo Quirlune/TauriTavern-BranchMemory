@@ -214,7 +214,7 @@ export function statusInjectionTargetFloor(snapshot, { reason = '', generationTy
         reason === 'before_generation'
         && lastRole === 'assistant'
         && currentFloor > 0
-        && type !== 'continue'
+        && ['regenerate', 'swipe'].includes(type)
     ) {
         return currentFloor - 1;
     }

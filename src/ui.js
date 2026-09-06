@@ -1,4 +1,7 @@
 import { DOMPurify } from '/lib.js';
+import { promptControlHtml } from './prompt-control-ui.js';
+import { transformPrompt } from './prompt-control.js';
+import { promptDetailHtml, promptRecordTitle, promptRecordVisible } from './prompt-inspector.js';
 import { escapeHtml, statusInsertionIndex, uniqueId } from './core.js';
 
 function readPath(target, path) {
@@ -16,9 +19,29 @@ function option(value, label, current) {
     return `<option value="${value}" ${value === current ? 'selected' : ''}>${label}</option>`;
 }
 
+const PAGES = {
+    memory: ['分支记忆', '设置总结频率与提示词，复用当前分支中仍然有效的历史总结。'],
+    status: ['状态栏', '按楼层保存状态；切换已有回复时读取缓存，重新生成回复时更新状态。'],
+    image: ['图片生成', '管理插图规划、角色外貌与 RunPod 连接。'],
+    'prompt-control': ['提示词控制', '决定消息的归属、合并方式，以及哪些条目跳过处理。'],
+    monitor: ['提示词查看', '从实际请求查看发送内容，按角色与消息逐层展开。'],
+    runtime: ['运行状态', '查看当前分支的缓存命中、最近刷新和错误信息。']
+};
+
+function disclosure(key, title, description = '') {
+    return `<details class="ttbm-section ttbm-disclosure" data-view-key="${escapeHtml(key)}">
+        <summary><span><strong>${escapeHtml(title)}</strong>${description ? `<small>${escapeHtml(description)}</small>` : ''}</span></summary><div class="ttbm-disclosure-body">`;
+}
+
+function entrySummary(title, enabled, detail) {
+    return `<summary class="ttbm-entry-summary"><span class="ttbm-entry-overview"><strong data-entry-name>${escapeHtml(title || '未命名')}</strong><small data-entry-detail>${escapeHtml(detail)}</small></span><span data-entry-state class="ttbm-badge ${enabled ? 'is-enabled' : ''}">${enabled ? '启用' : '停用'}</span></summary>`;
+}
+
 function promptEntriesHtml(entries, listPath) {
     return (entries || []).map((entry, index) => `
-        <article class="ttbm-card" data-list-path="${listPath}" data-index="${index}">
+        <details class="ttbm-card ttbm-editor" data-view-key="${escapeHtml(`${listPath}/${entry.id || index}`)}" data-list-path="${listPath}" data-index="${index}">
+            ${entrySummary(entry.title, entry.enabled, `${entry.role} · ${String(entry.content || '').length} 字符`)}
+            <div class="ttbm-editor-body">
             <div class="ttbm-card-head">
                 <label class="ttbm-grow">名称<input class="ttbm-entry-title text_pole" value="${escapeHtml(entry.title)}"></label>
                 <label>角色<select class="ttbm-entry-role text_pole">
@@ -28,19 +51,22 @@ function promptEntriesHtml(entries, listPath) {
                 </select></label>
                 <label class="ttbm-check"><input class="ttbm-entry-enabled" type="checkbox" ${entry.enabled ? 'checked' : ''}>启用</label>
             </div>
-            <textarea class="ttbm-entry-content text_pole" rows="7">${escapeHtml(entry.content)}</textarea>
+            <label>提示词内容<textarea class="ttbm-entry-content text_pole" rows="7">${escapeHtml(entry.content)}</textarea></label>
             <div class="ttbm-card-actions">
                 <button class="menu_button ttbm-move-up" type="button">上移</button>
                 <button class="menu_button ttbm-move-down" type="button">下移</button>
                 <button class="menu_button ttbm-remove-entry" type="button">删除</button>
             </div>
-        </article>
+            </div>
+        </details>
     `).join('');
 }
 
 function regexRulesHtml(rules, listPath) {
     return (rules || []).map((rule, index) => `
-        <article class="ttbm-card ttbm-regex-card" data-list-path="${listPath}" data-index="${index}">
+        <details class="ttbm-card ttbm-regex-card ttbm-editor" data-view-key="${escapeHtml(`${listPath}/${rule.id || index}`)}" data-list-path="${listPath}" data-index="${index}">
+            ${entrySummary(rule.name, rule.enabled, `/${rule.pattern || '未填写正则'}/${rule.flags || 'g'}`)}
+            <div class="ttbm-editor-body">
             <div class="ttbm-card-head">
                 <label class="ttbm-grow">规则名<input class="ttbm-rule-name text_pole" value="${escapeHtml(rule.name)}"></label>
                 <label>flags<input class="ttbm-rule-flags text_pole" value="${escapeHtml(rule.flags || 'g')}"></label>
@@ -53,7 +79,8 @@ function regexRulesHtml(rules, listPath) {
                 <button class="menu_button ttbm-move-down" type="button">下移</button>
                 <button class="menu_button ttbm-remove-entry" type="button">删除</button>
             </div>
-        </article>
+            </div>
+        </details>
     `).join('');
 }
 
@@ -64,13 +91,13 @@ function numberField(label, path, value, min = 0, max = 100000) {
 function monitorRecordHtml(record) {
     const time = new Date(record.timestamp).toLocaleTimeString();
     return `
-        <details class="ttbm-monitor-event ttbm-monitor-${escapeHtml(record.level)}" data-monitor-id="${escapeHtml(record.id)}">
+        <details class="ttbm-monitor-event ttbm-monitor-${escapeHtml(record.level)}" data-view-key="monitor/${escapeHtml(record.id)}" data-monitor-id="${escapeHtml(record.id)}">
             <summary>
                 <time>${escapeHtml(time)}</time>
                 <span class="ttbm-monitor-channel">${escapeHtml(record.channel)}</span>
-                <strong>${escapeHtml(record.type)}</strong>
+                <strong>${escapeHtml(promptRecordTitle(record))}</strong>
             </summary>
-            <pre class="ttbm-monitor-json">展开后加载完整事件数据</pre>
+            <div class="ttbm-monitor-detail">展开后读取提示词</div>
         </details>
     `;
 }
@@ -89,6 +116,9 @@ export class SettingsUi {
         this.imageRegenerationBusy = false;
         this.stats = null;
         this.modalTab = 'memory';
+        this.views = new Map();
+        this.renderedTab = null;
+        this.monitorFilter = this.monitor?.nativeLogs ? 'native' : 'requests';
     }
 
     mount() {
@@ -226,7 +256,7 @@ export class SettingsUi {
                     <div class="ttbm-inline-actions">
                         <button id="ttbm-open-settings" class="menu_button" type="button">详细设置</button>
                         <button id="ttbm-run-now" class="menu_button" type="button">立即同步</button>
-                        <button id="ttbm-open-monitor" class="menu_button" type="button">调用监控</button>
+                        <button id="ttbm-open-monitor" class="menu_button" type="button">提示词查看</button>
                     </div>
                     <small>楼层只计算 user 消息；AI 消息不计楼。摘要以消息链锚点跨分支复用。</small>
                 </div>
@@ -242,17 +272,19 @@ export class SettingsUi {
                 <div class="ttbm-modal-backdrop" data-close-modal></div>
                 <section class="ttbm-modal-panel" role="dialog" aria-modal="true" aria-label="Branch Memory 设置">
                     <header class="ttbm-modal-head">
-                        <div><strong>Branch Memory, Status & Images</strong><small>分支记忆、独立状态栏与 RunPod 插图</small></div>
+                        <div><strong>Branch Memory</strong><small>记忆 · 状态 · 提示词 · 插图</small></div>
                         <button class="menu_button" type="button" data-close-modal>关闭</button>
                     </header>
-                    <nav class="ttbm-tabs">
-                        <button class="menu_button" data-tab="memory" type="button">记忆模块</button>
-                        <button class="menu_button" data-tab="status" type="button">状态栏模块</button>
-                        <button class="menu_button" data-tab="image" type="button">图片模块</button>
+                    <div class="ttbm-modal-layout"><nav class="ttbm-tabs" aria-label="设置页面">
+                        <button class="menu_button" data-tab="memory" type="button">分支记忆</button>
+                        <button class="menu_button" data-tab="status" type="button">状态栏</button>
+                        <button class="menu_button" data-tab="image" type="button">图片生成</button>
+                        <button class="menu_button" data-tab="prompt-control" type="button">提示词控制</button>
                         <button class="menu_button" data-tab="runtime" type="button">运行状态</button>
-                        <button class="menu_button" data-tab="monitor" type="button">调用监控</button>
+                        <button class="menu_button" data-tab="monitor" type="button">提示词查看</button>
                     </nav>
-                    <div id="ttbm-modal-body" class="ttbm-modal-body"></div>
+                    <div id="ttbm-modal-body" class="ttbm-modal-body" role="region" aria-labelledby="ttbm-page-title" tabindex="-1"></div></div>
+                    <footer class="ttbm-modal-foot">设置更改后自动保存<span>Esc 关闭</span></footer>
                 </section>
             </div>
         `);
@@ -305,11 +337,37 @@ export class SettingsUi {
                 });
             }
 
+            if (event.target.closest('[data-add-control-rule]')) {
+                this.settings.promptControl.rules.push({ id: uniqueId('control'), source: '*', contains: '', target: 'keep', enabled: true });
+                this.renderModal();
+                this.#changed(true);
+            }
+            const controlAction = event.target.closest('[data-control-action]')?.dataset.controlAction;
+            if (controlAction) {
+                const output = document.getElementById('ttbm-control-output');
+                try {
+                    const input = JSON.parse(document.getElementById('ttbm-control-input').value);
+                    if (controlAction === 'preview') {
+                        if (!Array.isArray(input)) throw new Error('请填入 messages JSON 数组');
+                        output.textContent = JSON.stringify(transformPrompt(input, this.settings.promptControl, 'body'), null, 2);
+                    } else {
+                        if (!input || Array.isArray(input) || typeof input !== 'object') throw new Error('请填入脚本配置 JSON 对象');
+                        const config = this.settings.promptControl;
+                        for (const key of Object.keys(config.prefixes)) if (typeof input[key] === 'string') config.prefixes[key] = input[key];
+                        for (const key of ['separator', 'separator_system']) if (typeof input[key] === 'string') config[key] = input[key];
+                        this.#changed(true);
+                        this.renderModal();
+                        document.getElementById('ttbm-control-output').textContent = '已导入提示词格式配置。';
+                    }
+                } catch (error) { output.textContent = error.message; }
+            }
+
             const addEntry = event.target.closest('[data-add-entry]');
             if (addEntry) {
                 const list = readPath(this.settings, addEntry.dataset.addEntry);
                 list.push({ id: uniqueId('prompt'), title: '新条目', enabled: true, role: 'user', content: '' });
                 this.renderModal();
+                this.#openNewEntry(addEntry.dataset.addEntry);
                 this.#changed(true);
             }
 
@@ -318,6 +376,7 @@ export class SettingsUi {
                 const list = readPath(this.settings, addRule.dataset.addRule);
                 list.push({ id: uniqueId('regex'), name: '新正则', enabled: true, pattern: '', flags: 'g', replacement: '' });
                 this.renderModal();
+                this.#openNewEntry(addRule.dataset.addRule);
                 this.#changed(true);
             }
 
@@ -340,6 +399,18 @@ export class SettingsUi {
             }
         });
 
+        modal.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); this.close(); }
+            if (event.key !== 'Tab') return;
+            const focusable = [...modal.querySelectorAll('button, input, select, textarea, summary, [tabindex="0"]')]
+                .filter(element => !element.disabled && element.getClientRects().length);
+            const first = focusable[0], last = focusable.at(-1);
+            if (event.shiftKey && (document.activeElement === first || !focusable.includes(document.activeElement))) {
+                event.preventDefault(); last?.focus();
+            } else if (!event.shiftKey && (document.activeElement === last || !focusable.includes(document.activeElement))) {
+                event.preventDefault(); first?.focus();
+            }
+        });
         modal.addEventListener('input', (event) => this.#readInput(event));
         modal.addEventListener('change', (event) => this.#readInput(event));
         modal.addEventListener('toggle', (event) => {
@@ -350,6 +421,11 @@ export class SettingsUi {
 
     #readInput(event) {
         const target = event.target;
+        if (target.id === 'ttbm-monitor-filter') {
+            this.monitorFilter = target.value;
+            this.renderModal();
+            return;
+        }
         const path = target.dataset.setting;
         if (path) {
             let value = target.type === 'checkbox' ? target.checked : target.value;
@@ -361,7 +437,7 @@ export class SettingsUi {
             }
             if (event.type === 'change' && path === 'image.enabled') this.#updateWandImageToggle();
             this.#changed(event.type === 'change');
-            if (event.type === 'change' && path.endsWith('.api.mode')) {
+            if (event.type === 'change' && (path.endsWith('.api.mode') || path.endsWith('.api.connectionProfileId'))) {
                 this.renderModal();
             }
             return;
@@ -390,6 +466,11 @@ export class SettingsUi {
         const list = readPath(this.settings, card.dataset.listPath);
         const item = list[Number(card.dataset.index)];
         if (!item) return;
+        if (target.dataset.controlField) {
+            item[target.dataset.controlField] = target.type === 'checkbox' ? target.checked : target.value;
+            this.#changed(event.type === 'change');
+            return;
+        }
 
         if (target.classList.contains('ttbm-entry-title')) item.title = target.value;
         if (target.classList.contains('ttbm-entry-role')) item.role = target.value;
@@ -400,7 +481,30 @@ export class SettingsUi {
         if (target.classList.contains('ttbm-rule-enabled')) item.enabled = target.checked;
         if (target.classList.contains('ttbm-rule-pattern')) item.pattern = target.value;
         if (target.classList.contains('ttbm-rule-replacement')) item.replacement = target.value;
+        const name = card.querySelector('[data-entry-name]');
+        if (name) {
+            name.textContent = item.title || item.name || '未命名';
+            card.querySelector('[data-entry-detail]').textContent = item.role
+                ? `${item.role} · ${String(item.content || '').length} 字符`
+                : `/${item.pattern || '未填写正则'}/${item.flags || 'g'}`;
+            const badge = card.querySelector('[data-entry-state]');
+            badge.textContent = item.enabled ? '启用' : '停用';
+            badge.classList.toggle('is-enabled', Boolean(item.enabled));
+            if (!item.role) {
+                const section = [...document.querySelectorAll('#ttbm-modal [data-view-key]')].find(el => el.dataset.viewKey === card.dataset.listPath);
+                const count = section?.querySelector(':scope > summary small');
+                if (count) count.textContent = `${list.filter(rule => rule.enabled).length} 条启用 / ${list.length} 条规则`;
+            }
+        }
         this.#changed(event.type === 'change');
+    }
+
+    #openNewEntry(path) {
+        const cards = [...document.querySelectorAll('#ttbm-modal [data-list-path]')].filter(card => card.dataset.listPath === path);
+        const card = cards.at(-1);
+        if (!card) return;
+        for (let parent = card; parent; parent = parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true;
+        card.querySelector('input')?.focus();
     }
 
     #changed(apply = false) {
@@ -408,10 +512,12 @@ export class SettingsUi {
     }
 
     open() {
+        if (document.getElementById('ttbm-modal').hidden) this.returnFocus = document.activeElement;
         document.documentElement.classList.add('ttbm-modal-open');
         document.body.classList.add('ttbm-modal-open');
         document.getElementById('ttbm-modal').hidden = false;
         this.renderModal();
+        document.querySelector('#ttbm-modal [data-close-modal].menu_button')?.focus();
     }
 
     close() {
@@ -419,41 +525,82 @@ export class SettingsUi {
         document.documentElement.classList.remove('ttbm-modal-open');
         document.body.classList.remove('ttbm-modal-open');
         this.#changed(true);
+        if (this.returnFocus?.isConnected) this.returnFocus.focus();
     }
 
     renderModal() {
         const body = document.getElementById('ttbm-modal-body');
         if (!body) return;
-        document.querySelectorAll('#ttbm-modal [data-tab]').forEach(button => button.classList.toggle('ttbm-active', button.dataset.tab === this.modalTab));
-        if (this.modalTab === 'memory') body.innerHTML = this.#memoryHtml();
-        if (this.modalTab === 'status') body.innerHTML = this.#statusHtml();
-        if (this.modalTab === 'image') body.innerHTML = this.#imageHtml();
-        if (this.modalTab === 'runtime') body.innerHTML = this.#runtimeHtml();
-        if (this.modalTab === 'monitor') body.innerHTML = this.#monitorHtml();
+        const active = body.contains(document.activeElement) ? document.activeElement : null;
+        const activePath = active?.dataset.setting;
+        const activeCardKey = active?.closest('[data-view-key]')?.dataset.viewKey;
+        const activeClass = active?.className;
+        const activeId = active?.id;
+        if (this.renderedTab) this.views.set(this.renderedTab, {
+            scroll: body.scrollTop,
+            details: new Map([...body.querySelectorAll('[data-view-key]')].map(el => [el.dataset.viewKey, el.open])),
+            draft: body.querySelector('#ttbm-control-input')?.value,
+            output: body.querySelector('#ttbm-control-output')?.textContent
+        });
+        const samePage = this.renderedTab === this.modalTab;
+        document.querySelectorAll('#ttbm-modal [data-tab]').forEach(button => {
+            const selected = button.dataset.tab === this.modalTab;
+            button.classList.toggle('ttbm-active', selected);
+            if (selected) button.setAttribute('aria-current', 'page');
+            else button.removeAttribute('aria-current');
+        });
+        const content = {
+            memory: () => this.#memoryHtml(), status: () => this.#statusHtml(), image: () => this.#imageHtml(),
+            runtime: () => this.#runtimeHtml(), monitor: () => this.#monitorHtml(),
+            'prompt-control': () => promptControlHtml(this.settings.promptControl)
+        }[this.modalTab]();
+        const [title, description] = PAGES[this.modalTab];
+        body.innerHTML = `<header class="ttbm-page-head"><h2 id="ttbm-page-title">${title}</h2><p>${description}</p></header>${content}`;
+        const view = this.views.get(this.modalTab);
+        body.querySelectorAll('[data-view-key]').forEach(el => {
+            if (view?.details.has(el.dataset.viewKey)) el.open = view.details.get(el.dataset.viewKey);
+        });
+        if (view?.draft !== undefined) body.querySelector('#ttbm-control-input').value = view.draft;
+        if (view?.output !== undefined) body.querySelector('#ttbm-control-output').textContent = view.output;
+        if (samePage && active) {
+            const owner = [...body.querySelectorAll('[data-view-key]')].find(el => el.dataset.viewKey === activeCardKey);
+            const replacement = activePath
+                ? [...body.querySelectorAll('[data-setting]')].find(el => el.dataset.setting === activePath)
+                : activeId ? document.getElementById(activeId)
+                    : [...(owner?.querySelectorAll('button, input, select, textarea, summary') || [])].find(el => el.className === activeClass);
+            (replacement || body).focus({ preventScroll: true });
+        }
+        body.scrollTop = view?.scroll || 0;
+        this.renderedTab = this.modalTab;
     }
 
     #memoryHtml() {
         const memory = this.settings.memory;
         return `
             <section class="ttbm-section">
+                <h3>常用设置</h3>
                 <div class="ttbm-grid ttbm-grid-5">
                     <label class="ttbm-check"><input type="checkbox" data-setting="memory.enabled" ${memory.enabled ? 'checked' : ''}>启用记忆</label>
                     ${numberField('小总结每 N 楼', 'memory.smallEvery', memory.smallEvery, 1)}
-                    ${numberField('小总结额外读取 K 楼', 'memory.smallContextExtraFloors', memory.smallContextExtraFloors || 0, 0)}
                     ${numberField('大总结每 N 楼', 'memory.largeEvery', memory.largeEvery, 1)}
                     ${numberField('保留最近 N 楼不处理', 'memory.reserveFloors', memory.reserveFloors, 0)}
-                    ${numberField('每轮最多记忆调用', 'memory.maxCallsPerTurn', memory.maxCallsPerTurn, 0, 20)}
                     ${numberField('单次最大输出 tokens', 'memory.responseLength', memory.responseLength, 32, 32000)}
                 </div>
+                ${disclosure('memory.schedule', '高级调度', '参考楼层与每轮调用上限')}
+                <div class="ttbm-grid">
+                    ${numberField('小总结额外读取 K 楼', 'memory.smallContextExtraFloors', memory.smallContextExtraFloors || 0, 0)}
+                    ${numberField('每轮最多记忆调用', 'memory.maxCallsPerTurn', memory.maxCallsPerTurn, 0, 20)}
+                </div>
+                <p class="ttbm-hint">额外 K 楼只作参考；修改这些参考楼层不会让已生成的总结失效。每轮调用上限设为 0 时只读取已有总结。</p>
+                </div></details>
                 <p class="ttbm-hint">大总结为累计叠层；主对话只注入最新大总结和其后的阶段小总结。修改提示词或正则会自动形成新配方，不会误用旧结果。</p>
             </section>
             ${this.#apiSection('记忆模型连接', 'memory.api', memory.api)}
             ${this.#regexSection('记忆输入正则', 'memory.inputRegex', memory.inputRegex, '先处理被送入模型的聊天文本。')}
-            ${this.#promptSection('小总结提示词条目栈', 'memory.smallPromptEntries', memory.smallPromptEntries)}
-            ${this.#promptSection('大总结提示词条目栈', 'memory.largePromptEntries', memory.largePromptEntries)}
+            ${this.#promptSection('小总结提示词', 'memory.smallPromptEntries', memory.smallPromptEntries)}
+            ${this.#promptSection('大总结提示词', 'memory.largePromptEntries', memory.largePromptEntries)}
             ${this.#regexSection('记忆输出正则', 'memory.outputRegex', memory.outputRegex, '模型返回后按顺序替换，再保存摘要。')}
-            <section class="ttbm-section">
-                <h3>主对话记忆注入</h3>
+            ${disclosure('memory.injection', '主对话记忆注入', '注入开关、位置与模板')}
                 <div class="ttbm-grid">
                     <label class="ttbm-check"><input type="checkbox" data-setting="memory.injection.enabled" ${memory.injection.enabled ? 'checked' : ''}>启用注入</label>
                     <label>位置<select class="text_pole" data-setting="memory.injection.position">
@@ -470,7 +617,7 @@ export class SettingsUi {
                 </div>
                 <label>注入模板<textarea class="text_pole" rows="8" data-setting="memory.injection.template">${escapeHtml(memory.injection.template)}</textarea></label>
                 <p class="ttbm-hint">可用：{{large_memory}}、{{small_memory}}、{{memory}}</p>
-            </section>
+            </div></details>
         `;
     }
 
@@ -478,21 +625,19 @@ export class SettingsUi {
         const status = this.settings.status;
         return `
             <section class="ttbm-section">
+                <h3>常用设置</h3>
                 <div class="ttbm-grid">
-                    <label class="ttbm-check"><input type="checkbox" data-setting="status.enabled" ${status.enabled ? 'checked' : ''}>每次 AI 输出后独立更新</label>
+                    <label class="ttbm-check"><input type="checkbox" data-setting="status.enabled" ${status.enabled ? 'checked' : ''}>启用状态栏</label>
                     ${numberField('读取最近 N 个用户楼层', 'status.contextFloors', status.contextFloors, 1, 1000)}
                     ${numberField('单次最大输出 tokens', 'status.responseLength', status.responseLength, 32, 32000)}
-                    ${numberField('显示深度（0 = 最后一条消息后）', 'status.renderDepth', status.renderDepth, 0, 100000)}
-                    <label class="ttbm-check"><input type="checkbox" data-setting="status.renderAsHtml" ${status.renderAsHtml ? 'checked' : ''}>把状态输出按 HTML 渲染</label>
                 </div>
-                <p class="ttbm-hint">状态栏只在一轮 AI 回复完成后调用。显示深度按当前已加载消息从末尾倒数：0 在最后，1 插在最后一条消息前。开启 HTML 渲染意味着你信任自己的提示词和模型输出。</p>
+                <p class="ttbm-hint">切换已有的左右候选回复不会发起调用；重新生成整条回复会更新对应状态栏。</p>
             </section>
             ${this.#apiSection('状态栏模型连接', 'status.api', status.api)}
             ${this.#regexSection('状态栏输入正则', 'status.inputRegex', status.inputRegex, '先处理最近对话，再交给状态栏模型调用。')}
-            ${this.#promptSection('状态栏提示词条目栈', 'status.promptEntries', status.promptEntries)}
+            ${this.#promptSection('状态栏提示词', 'status.promptEntries', status.promptEntries)}
             ${this.#regexSection('状态栏渲染输出正则', 'status.outputRegex', status.outputRegex, '直接处理状态模型原始输出，仅用于界面渲染。')}
-            <section class="ttbm-section">
-                <h3>正文生成状态注入</h3>
+            ${disclosure('status.injection', '正文生成状态注入', '下一轮正文读取哪些状态')}
                 <div class="ttbm-grid">
                     <label class="ttbm-check"><input type="checkbox" data-setting="status.injection.enabled" ${status.injection.enabled ? 'checked' : ''}>注入下一轮正文生成</label>
                     <label>位置<select class="text_pole" data-setting="status.injection.position">
@@ -509,14 +654,18 @@ export class SettingsUi {
                 </div>
                 <label>注入模板<textarea class="text_pole" rows="7" data-setting="status.injection.template">${escapeHtml(status.injection.template)}</textarea></label>
                 <p class="ttbm-hint">模板宏：{{status}}。这里读取状态模型的原始输出，不会复用上方渲染正则的处理结果。</p>
-            </section>
+            </div></details>
             ${this.#regexSection('正文注入输出正则', 'status.injection.outputRegex', status.injection.outputRegex, '直接处理状态模型原始输出，仅用于送入下一轮正文生成。')}
-            <section class="ttbm-section">
-                <h3>状态栏渲染</h3>
+            ${disclosure('status.render', '状态栏渲染', '显示位置、HTML 模板与 CSS')}
+                <div class="ttbm-grid">
+                    ${numberField('显示深度（0 = 最后一条消息后）', 'status.renderDepth', status.renderDepth, 0, 100000)}
+                    <label class="ttbm-check"><input type="checkbox" data-setting="status.renderAsHtml" ${status.renderAsHtml ? 'checked' : ''}>把状态输出按 HTML 渲染</label>
+                </div>
+                <p class="ttbm-hint">显示深度从末尾倒数，0 在最后。HTML 模式会渲染状态模型输出。</p>
                 <label>HTML 模板<textarea class="text_pole" rows="7" data-setting="status.htmlTemplate">${escapeHtml(status.htmlTemplate)}</textarea></label>
                 <p class="ttbm-hint">模板宏：{{status}}</p>
                 <label>自定义 CSS<textarea class="text_pole ttbm-code" rows="12" data-setting="status.css">${escapeHtml(status.css)}</textarea></label>
-            </section>
+            </div></details>
         `;
     }
 
@@ -552,6 +701,7 @@ export class SettingsUi {
         const runpod = image.runpod;
         return `
             <section class="ttbm-section">
+                <h3>常用设置</h3>
                 <div class="ttbm-grid">
                     <label class="ttbm-check"><input type="checkbox" data-setting="image.enabled" ${image.enabled ? 'checked' : ''}>启用图片模块</label>
                     <label class="ttbm-check"><input type="checkbox" data-setting="image.paused" ${image.paused ? 'checked' : ''}>暂停生图（缓存图片仍显示）</label>
@@ -566,17 +716,15 @@ export class SettingsUi {
             ${this.#apiSection('图片规划模型连接', 'image.api', image.api)}
             ${this.#characterPromptHtml()}
             ${this.#regexSection('正文提取正则', 'image.inputRegex', image.inputRegex, '先从 AI 回复中提取/清洗需要规划插图的正文，再交给图片规划模型。')}
-            ${this.#promptSection('图片规划提示词条目栈', 'image.promptEntries', image.promptEntries)}
-            <section class="ttbm-section">
-                <h3>图片规划 XML 标签</h3>
+            ${this.#promptSection('图片规划提示词', 'image.promptEntries', image.promptEntries)}
+            ${disclosure('image.xml', '图片规划 XML 标签', '插入位置与提示词标签')}
                 <div class="ttbm-grid">
                     <label>插入位置标签<input class="text_pole" data-setting="image.positionTag" value="${escapeHtml(image.positionTag || 'position')}" placeholder="position"></label>
                     <label>正面提示词标签<input class="text_pole" data-setting="image.promptTag" value="${escapeHtml(image.promptTag || 'positive_prompt')}" placeholder="positive_prompt"></label>
                 </div>
                 <p class="ttbm-hint">程序会把正文切成带序号的 <code>&lt;segment id="..."&gt;</code> 分片。规划模型也可输出 <code>&lt;stop_image_generation&gt;原因&lt;/stop_image_generation&gt;</code>，停止错误或无意义正文的生图。</p>
-            </section>
-            <section class="ttbm-section">
-                <h3>RunPod Serverless 生图 API</h3>
+            </div></details>
+            ${disclosure('image.runpod', 'RunPod Serverless 生图 API', '连接信息、图像尺寸与生成参数')}
                 <div class="ttbm-grid">
                     <label>API Base URL<input class="text_pole" data-setting="image.runpod.apiBase" value="${escapeHtml(runpod.apiBase || '')}" placeholder="https://api.runpod.ai/v2"></label>
                     <label>Endpoint ID<input class="text_pole" data-setting="image.runpod.endpointId" value="${escapeHtml(runpod.endpointId || '')}"></label>
@@ -590,7 +738,7 @@ export class SettingsUi {
                 <label>RunPod API Key<textarea class="text_pole ttbm-code" rows="2" data-setting="image.runpod.apiKey">${escapeHtml(runpod.apiKey || '')}</textarea></label>
                 <label>正面提示词永久前缀<textarea class="text_pole ttbm-code" rows="5" data-setting="image.runpod.positivePromptPrefix">${escapeHtml(runpod.positivePromptPrefix || '')}</textarea></label>
                 <p class="ttbm-hint">多个提示词会先连续提交到同一个 Endpoint 队列，再开始统一轮询。当前 Endpoint 的负面提示词固定在工作流中，API 暂不支持动态修改。</p>
-            </section>
+            </div></details>
         `;
     }
 
@@ -618,13 +766,12 @@ export class SettingsUi {
         const record = prompts.records[info.key] || {};
         const savedCount = Object.keys(prompts.records).length;
         return `
-            <section class="ttbm-section">
-                <h3>角色外貌提示词</h3>
-                <p class="ttbm-hint">当前角色：<strong>${escapeHtml(info.label)}</strong> <code>${escapeHtml(info.key)}</code>。这里保存的是当前角色的外貌/画风写法实例；切换角色后会自动加载对应角色的文本。</p>
+            ${disclosure('image.appearance', '角色外貌提示词', `当前角色：${info.label} · ${savedCount} 个外貌档案`)}
+                <p class="ttbm-hint">保存当前角色的外貌和画风；切换角色后会自动加载对应文本。</p>
                 <label>当前角色外貌提示词<textarea class="text_pole ttbm-code ttbm-character-prompt" rows="8">${escapeHtml(record.prompt || '')}</textarea></label>
                 <label>默认外貌提示词（当前角色未填写时使用）<textarea class="text_pole ttbm-code" rows="5" data-setting="image.characterPrompts.fallback">${escapeHtml(prompts.fallback || '')}</textarea></label>
-                <p class="ttbm-hint">图片规划提示词可用宏：{{character_prompt}}、{{appearance_prompt}}、{{character_name}}、{{character_key}}、{{character_id}}、{{character_file}}。已保存 ${savedCount} 个角色档案。</p>
-            </section>
+                <p class="ttbm-hint">图片规划提示词可用宏：{{character_prompt}}、{{appearance_prompt}}、{{character_name}}、{{character_key}}、{{character_id}}、{{character_file}}。</p>
+            </div></details>
         `;
     }
 
@@ -633,7 +780,7 @@ export class SettingsUi {
         return `
             <section class="ttbm-section ttbm-monitor-head">
                 <div class="ttbm-section-head">
-                    <h3>全局调用监控</h3>
+                    <h3>记录与筛选</h3>
                     <span id="ttbm-monitor-state" class="ttbm-monitor-state ${state.active ? 'ttbm-monitor-live' : ''}">${state.active ? '记录中' : '已暂停'} · ${state.records.length}/${state.maxEvents}</span>
                 </div>
                 <div class="ttbm-card-actions ttbm-monitor-actions">
@@ -642,10 +789,17 @@ export class SettingsUi {
                     <button class="menu_button" type="button" data-monitor-action="expand">全部展开</button>
                     <button class="menu_button" type="button" data-monitor-action="collapse">全部收起</button>
                 </div>
-                <p class="ttbm-hint">同时记录生成生命周期、最终 prompt/采样参数以及底层 fetch/XHR 请求与响应。Authorization、API Key、token、password、secret、cookie 等字段会递归脱敏。流式响应只记录请求与响应头，正文由生成事件反映。</p>
+                <label>查看层级<select id="ttbm-monitor-filter" class="text_pole">
+                    ${option('native', '后端实际请求（TauriTavern 2.2）', this.monitorFilter)}
+                    ${option('requests', '全部模型请求（含前端中间态）', this.monitorFilter)}
+                    ${option('errors', '错误与告警', this.monitorFilter)}
+                    ${option('all', '事件诊断', this.monitorFilter)}
+                </select></label>
+                <p id="ttbm-native-state" class="ttbm-hint">${this.#nativeStateText()}</p>
+                <p class="ttbm-hint">按角色分组，编号保留发送顺序，长文本默认折叠。后端日志在调用完成后出现；展开时读取脱敏原文。</p>
             </section>
             <section id="ttbm-monitor-list" class="ttbm-monitor-list">
-                ${state.records.map(monitorRecordHtml).join('') || '<p class="ttbm-hint">尚无事件。保持监控开启后执行正文生成或插件调用。</p>'}
+                ${state.records.filter(record => promptRecordVisible(record, this.monitorFilter)).slice().reverse().map(monitorRecordHtml).join('') || '<p class="ttbm-hint">这一层尚无记录；可切换层级，或保持监控开启后执行生成。</p>'}
             </section>
         `;
     }
@@ -654,8 +808,8 @@ export class SettingsUi {
         return `
             <section class="ttbm-section">
                 <div class="ttbm-section-head"><h3>${title}</h3><button class="menu_button" type="button" data-add-entry="${path}">新增条目</button></div>
-                <p class="ttbm-hint">按从上到下的顺序发送。常用宏：{{chat}}、{{summary_chat}}、{{context_chat}}、{{extra_chat}}、{{small_extra_floors}}、{{body}}、{{body_segments}}、{{segmented_body}}、{{source_segments}}、{{assistant}}、{{floor}}、{{floor_start}}、{{floor_end}}、{{summary_floor_start}}、{{summary_floor_end}}、{{context_floor_start}}、{{context_floor_end}}、{{extra_floor_start}}、{{extra_floor_end}}、{{total_floors}}、{{eligible_floor}}、{{previous_large}}、{{small_summaries}}、{{memory}}、{{status}}、{{previous_status}}、{{status_raw}}、{{status_injection}}、{{last_user}}、{{last_assistant}}、{{max_images}}、{{position_tag}}、{{prompt_tag}}、{{character_prompt}}、{{appearance_prompt}}、{{character_name}}、{{character_key}}、{{character_id}}、{{character_file}}</p>
-                <div class="ttbm-list">${promptEntriesHtml(entries, path)}</div>
+                <details class="ttbm-help" data-view-key="${path}/macros"><summary>可用宏与发送顺序</summary><p class="ttbm-hint">按从上到下的顺序发送。常用宏：{{chat}}、{{summary_chat}}、{{context_chat}}、{{extra_chat}}、{{small_extra_floors}}、{{body}}、{{body_segments}}、{{segmented_body}}、{{source_segments}}、{{assistant}}、{{floor}}、{{floor_start}}、{{floor_end}}、{{summary_floor_start}}、{{summary_floor_end}}、{{context_floor_start}}、{{context_floor_end}}、{{extra_floor_start}}、{{extra_floor_end}}、{{total_floors}}、{{eligible_floor}}、{{previous_large}}、{{small_summaries}}、{{memory}}、{{status}}、{{previous_status}}、{{status_raw}}、{{status_injection}}、{{last_user}}、{{last_assistant}}、{{max_images}}、{{position_tag}}、{{prompt_tag}}、{{character_prompt}}、{{appearance_prompt}}、{{character_name}}、{{character_key}}、{{character_id}}、{{character_file}}</p></details>
+                <div class="ttbm-list">${promptEntriesHtml(entries, path) || '<p class="ttbm-empty">暂无提示词条目，点击“新增条目”开始配置。</p>'}</div>
             </section>
         `;
     }
@@ -668,32 +822,31 @@ export class SettingsUi {
             return `<option value="${escapeHtml(profile.id)}" ${selected}>${escapeHtml(profile.name)}${detail ? ` · ${escapeHtml(detail)}` : ''}</option>`;
         }).join('');
         return `
-            <section class="ttbm-section">
-                <h3>${title}</h3>
+            ${disclosure(path, title, config.mode === 'connection_profile' ? (profiles.find(profile => profile.id === config.connectionProfileId)?.name || '请选择独立连接') : '沿用当前聊天 API')}
                 <div class="ttbm-grid">
                     <label>调用来源<select class="text_pole" data-setting="${path}.mode">
                         ${option('current', '沿用当前聊天 API', config.mode)}
                         ${option('connection_profile', '独立 Connection Manager 配置', config.mode)}
                     </select></label>
-                    <label>独立连接配置<select class="text_pole" data-setting="${path}.connectionProfileId" ${config.mode === 'connection_profile' ? '' : 'disabled'}>
+                    ${config.mode === 'connection_profile' ? `<label>独立连接配置<select class="text_pole" data-setting="${path}.connectionProfileId">
                         <option value="">请选择 Chat Completion 配置</option>
                         ${profileOptions}
                     </select></label>
-                    <label class="ttbm-check"><input type="checkbox" data-setting="${path}.includePreset" ${config.includePreset !== false ? 'checked' : ''}>应用该连接配置的采样预设</label>
+                    <label class="ttbm-check"><input type="checkbox" data-setting="${path}.includePreset" ${config.includePreset !== false ? 'checked' : ''}>应用该连接配置的采样预设</label>` : ''}
                 </div>
                 <p class="ttbm-hint">独立模式复用 Connection Manager 中保存的 Chat Completion 配置和密钥。记忆、状态栏和图片规划可以选择不同配置，插件不会保存这些模型 API Key。</p>
-                ${profiles.length ? '' : '<p class="ttbm-warning">当前没有可用的 Chat Completion Connection Profile，请先在 Connection Manager 中创建。</p>'}
-            </section>
+                ${config.mode !== 'connection_profile' || profiles.length ? '' : '<p class="ttbm-warning">当前没有可用的 Chat Completion Connection Profile，请先在 Connection Manager 中创建。</p>'}
+            </div></details>
         `;
     }
 
     #regexSection(title, path, rules, hint) {
         return `
-            <section class="ttbm-section">
-                <div class="ttbm-section-head"><h3>${title}</h3><button class="menu_button" type="button" data-add-rule="${path}">新增正则</button></div>
+            ${disclosure(path, title, `${(rules || []).filter(rule => rule.enabled).length} 条启用 / ${(rules || []).length} 条规则`)}
+                <div class="ttbm-section-head"><span>按列表顺序处理</span><button class="menu_button" type="button" data-add-rule="${path}">新增正则</button></div>
                 <p class="ttbm-hint">${hint} 规则按从上到下执行，语法为 JavaScript RegExp。</p>
-                <div class="ttbm-list">${regexRulesHtml(rules, path)}</div>
-            </section>
+                <div class="ttbm-list">${regexRulesHtml(rules, path) || '<p class="ttbm-empty">暂无正则，内容将直接通过。</p>'}</div>
+            </div></details>
         `;
     }
 
@@ -715,22 +868,38 @@ export class SettingsUi {
             status.textContent = `${state.active ? '记录中' : '已暂停'} · ${state.records.length}/${state.maxEvents}`;
             status.classList.toggle('ttbm-monitor-live', state.active);
         }
-        if (!state.record) return;
+        const nativeState = document.getElementById('ttbm-native-state');
+        if (nativeState) nativeState.textContent = this.#nativeStateText();
+        if (!state.record || !promptRecordVisible(state.record, this.monitorFilter)) return;
         const list = document.getElementById('ttbm-monitor-list');
         if (!list) return;
         if (!list.querySelector('[data-monitor-id]')) list.innerHTML = '';
-        list.insertAdjacentHTML('beforeend', monitorRecordHtml(state.record));
+        list.insertAdjacentHTML('afterbegin', monitorRecordHtml(state.record));
         while (list.querySelectorAll('[data-monitor-id]').length > state.maxEvents) {
-            list.querySelector('[data-monitor-id]')?.remove();
+            list.querySelector('[data-monitor-id]:last-child')?.remove();
         }
     }
 
-    #populateMonitorDetail(details) {
-        const pre = details.querySelector('.ttbm-monitor-json');
-        if (!pre || pre.dataset.loaded === 'true') return;
-        const record = this.monitor?.getRecord(details.dataset.monitorId);
-        pre.textContent = record ? JSON.stringify(record.details, null, 2) : '事件已从内存队列中移除。';
-        pre.dataset.loaded = 'true';
+    #nativeStateText() {
+        const state = this.monitorState.nativeState;
+        return ({ connected: '已连接 TauriTavern 后端 LLM 日志。', connecting: '正在连接后端日志…',
+            error: '后端日志读取失败；错误与告警中可查看原因。前端记录仍可用。',
+            unavailable: '当前宿主未提供后端日志 API；这里只能确认前端提交内容。' })[state] || '打开监控后连接后端日志。';
+    }
+
+    async #populateMonitorDetail(details) {
+        const container = details.querySelector('.ttbm-monitor-detail');
+        if (!container || container.dataset.loaded) return;
+        container.dataset.loaded = 'loading';
+        container.textContent = '正在读取…';
+        try {
+            const record = await this.monitor?.loadRecord(details.dataset.monitorId);
+            container.innerHTML = record ? promptDetailHtml(record, { prefixes: this.settings.promptControl.prefixes }) : '事件已从内存队列中移除。';
+            container.dataset.loaded = 'true';
+        } catch (error) {
+            container.textContent = `读取失败：${error.message}。宿主日志可能已轮换；收起后展开可重试。`;
+            delete container.dataset.loaded;
+        }
     }
 
     showError(error) {

@@ -1,3 +1,5 @@
+import { DEFAULT_PROMPT_CONTROL } from './prompt-control.js';
+
 export const EXTENSION_NAMESPACE = 'tt-branch-memory';
 export const SETTINGS_TABLE = 'settings';
 export const SETTINGS_KEY = 'v1';
@@ -17,6 +19,7 @@ export function migrateRunPodEndpointId(value) {
 export const DEFAULT_SETTINGS = {
     version: 2,
     enabled: true,
+    promptControl: DEFAULT_PROMPT_CONTROL,
     memory: {
         enabled: true,
         api: {
