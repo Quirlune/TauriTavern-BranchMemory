@@ -8,22 +8,22 @@ function redactString(value) {
         .replace(/([?&]|\b)(api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|csrf[_-]?token)=([^&\s]+)/gi, `$1$2=${REDACTED}`);
 }
 
-function clipped(value) {
-    const text = String(value ?? '');
-    if (text.length <= MAX_BODY_CHARS) return text;
-    return `${text.slice(0, MAX_BODY_CHARS)}\n...[truncated ${text.length - MAX_BODY_CHARS} chars]`;
-}
-
 export function sanitizeMonitorValue(value, keyHint = '', seen = new WeakSet(), depth = 0) {
-    if (SECRET_KEY_PATTERN.test(String(keyHint))) return REDACTED;
+    if (SECRET_KEY_PATTERN.test(String(keyHint).replace(/([a-z])([A-Z])/g, '$1_$2'))) return REDACTED;
     if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
-    if (typeof value === 'string') return clipped(redactString(value));
+    if (typeof value === 'string') return redactString(value);
     if (typeof value === 'bigint') return String(value);
     if (typeof value === 'function') return `[Function ${value.name || 'anonymous'}]`;
     if (typeof value !== 'object') return String(value);
     if (depth > 16) return '[Maximum depth reached]';
     if (seen.has(value)) return '[Circular]';
+    // Track ancestors, not siblings; repeated objects are not circular references.
+    return sanitizeObject(value, keyHint, depth, seen);
+}
+
+function sanitizeObject(value, keyHint, depth, seen) {
     seen.add(value);
+    try {
 
     if (value instanceof Date) return value.toISOString();
     if (typeof Headers !== 'undefined' && value instanceof Headers) {
@@ -58,6 +58,7 @@ export function sanitizeMonitorValue(value, keyHint = '', seen = new WeakSet(), 
         output[key] = sanitizeMonitorValue(item, key, seen, depth + 1);
     }
     return output;
+    } finally { seen.delete(value); }
 }
 
 function parseBody(body) {
@@ -124,7 +125,7 @@ const EVENT_NAMES = [
 ];
 
 export class RequestMonitor {
-    constructor({ eventSource, eventTypes, onChange = () => {}, maxEvents = 300 }) {
+    constructor({ eventSource, eventTypes, onChange = () => {}, maxEvents = 300, nativeLogs = globalThis.__TAURITAVERN__?.api?.dev?.llmApiLogs }) {
         this.eventSource = eventSource;
         this.eventTypes = eventTypes;
         this.onChange = onChange;
@@ -137,6 +138,12 @@ export class RequestMonitor {
         this.fetchWrapper = null;
         this.xhrOriginals = null;
         this.xhrWrappers = null;
+        this.nativeLogs = nativeLogs;
+        this.nativeStop = null;
+        this.nativeVersion = 0;
+        this.nativeState = nativeLogs ? 'idle' : 'unavailable';
+        this.nativeSeen = new Set();
+        this.rawLoads = new Map();
     }
 
     start() {
@@ -145,6 +152,7 @@ export class RequestMonitor {
         this.#attachEvents();
         this.#patchFetch();
         this.#patchXhr();
+        void this.#attachNative();
         this.record('monitor', 'monitor_started', { note: '开始记录酒馆事件、fetch 与 XMLHttpRequest。敏感凭据会被脱敏。' });
         this.#notify();
     }
@@ -153,6 +161,9 @@ export class RequestMonitor {
         if (!this.active) return;
         this.record('monitor', 'monitor_stopped', {});
         this.active = false;
+        this.nativeVersion += 1;
+        this.nativeStop?.();
+        this.nativeStop = null;
         for (const { event, handler } of this.listeners) {
             this.eventSource.removeListener(event, handler);
         }
@@ -166,11 +177,12 @@ export class RequestMonitor {
 
     clear() {
         this.records = [];
+        this.rawLoads.clear();
         this.#notify({ cleared: true });
     }
 
     snapshot() {
-        return { active: this.active, records: [...this.records], maxEvents: this.maxEvents };
+        return { active: this.active, records: [...this.records], maxEvents: this.maxEvents, nativeState: this.nativeState };
     }
 
     getRecord(id) {
@@ -178,9 +190,10 @@ export class RequestMonitor {
     }
 
     record(channel, type, details, level = 'info') {
+        if (!this.active) return null;
         const record = {
             id: `monitor-${Date.now().toString(36)}-${(++this.sequence).toString(36)}`,
-            timestamp: new Date().toISOString(),
+            timestamp: new Date(Number(details?.timestampMs) || Date.now()).toISOString(),
             channel,
             type,
             level,
@@ -195,7 +208,54 @@ export class RequestMonitor {
     }
 
     #notify(extra = {}) {
-        this.onChange({ ...this.snapshot(), ...extra });
+        try { this.onChange({ ...this.snapshot(), ...extra }); }
+        catch (error) { console.warn('[BranchMemory] Monitor UI failed', error); }
+    }
+
+    async #attachNative() {
+        if (!this.nativeLogs) return;
+        const version = ++this.nativeVersion;
+        this.nativeState = 'connecting';
+        const accept = entry => {
+            if (!this.active || version !== this.nativeVersion || !entry?.id || this.nativeSeen.has(entry.id)) return;
+            this.nativeSeen.add(entry.id);
+            // Keep the deduplication window bounded independently of loaded request bodies.
+            if (this.nativeSeen.size > this.maxEvents * 4) this.nativeSeen.delete(this.nativeSeen.values().next().value);
+            this.record('native', 'provider_request', { ...entry, nativeLogId: entry.id }, entry.ok === false ? 'error' : 'info');
+        };
+        try {
+            const stop = await this.nativeLogs.subscribeIndex(accept);
+            if (!this.active || version !== this.nativeVersion) { stop(); return; }
+            this.nativeStop = stop;
+            const entries = await this.nativeLogs.index({ limit: Math.min(50, this.maxEvents) });
+            if (version !== this.nativeVersion) return;
+            for (const entry of entries) accept(entry);
+            this.nativeState = 'connected';
+            this.#notify();
+        } catch (error) {
+            if (version !== this.nativeVersion) return;
+            this.nativeState = 'error';
+            this.record('monitor', 'native_log_error', { error }, 'warn');
+        }
+    }
+
+    async loadRecord(id) {
+        const record = this.getRecord(id);
+        if (!record || !record.details.nativeLogId || record.details.requestBody !== undefined) return record;
+        if (this.rawLoads.has(id)) return this.rawLoads.get(id);
+        const promise = (async () => {
+            try {
+                const raw = await this.nativeLogs.getRaw(record.details.nativeLogId);
+                record.details.requestBody = parseBody(raw.requestRaw);
+                // Responses have no bearing on prompt completeness; load them separately
+                // as a bounded diagnostic to avoid putting huge SSE logs in the DOM.
+                record.details.responseBody = parseBody(String(raw.responseRaw || '').slice(0, MAX_BODY_CHARS));
+                record.details.responseTruncated = String(raw.responseRaw || '').length > MAX_BODY_CHARS;
+                return record;
+            } finally { this.rawLoads.delete(id); }
+        })();
+        this.rawLoads.set(id, promise);
+        return promise;
     }
 
     #attachEvents() {
@@ -211,15 +271,21 @@ export class RequestMonitor {
     #patchFetch() {
         if (typeof globalThis.fetch !== 'function') return;
         this.originalFetch = globalThis.fetch;
+        const originalFetch = this.originalFetch;
         const monitor = this;
         this.fetchWrapper = async function monitoredFetch(input, init) {
-            if (!monitor.active) return monitor.originalFetch.call(this, input, init);
+            if (!monitor.active || monitor.fetchWrapper !== monitoredFetch) return originalFetch.call(this, input, init);
             const requestId = `fetch-${Date.now().toString(36)}-${(++monitor.sequence).toString(36)}`;
             const startedAt = Date.now();
-            const request = await requestSnapshot(input, init);
-            monitor.record('network', 'fetch_request', { requestId, ...request });
+            let request = { url: String(input?.url || input) };
             try {
-                const response = await monitor.originalFetch.call(this, input, init);
+                request = await requestSnapshot(input, init);
+                monitor.record('network', 'fetch_request', { requestId, ...request });
+            } catch (error) {
+                monitor.record('monitor', 'request_capture_error', { requestId, error }, 'warn');
+            }
+            try {
+                const response = await originalFetch.call(this, input, init);
                 const contentType = response.headers?.get?.('content-type') || '';
                 const base = {
                     requestId,
@@ -232,12 +298,12 @@ export class RequestMonitor {
                     headers: responseHeaders(response)
                 };
                 monitor.record('network', 'fetch_response', base, response.ok ? 'info' : 'error');
-                if (!/text\/event-stream|application\/x-ndjson/i.test(contentType)) {
+                if (/json|text\//i.test(contentType) && !/text\/event-stream|application\/x-ndjson/i.test(contentType)) {
                     void response.clone().text()
                         .then(text => monitor.record('network', 'fetch_response_body', {
                             requestId,
                             url: request.url,
-                            body: parseBody(text)
+                            body: parseBody(text),
                         }))
                         .catch(error => monitor.record('network', 'fetch_response_body_error', { requestId, url: request.url, error }, 'warn'));
                 }
@@ -268,7 +334,7 @@ export class RequestMonitor {
             return originalSetHeader.call(this, name, value);
         };
         const sendWrapper = function monitoredSend(body) {
-            if (!monitor.active) return originalSend.call(this, body);
+            if (!monitor.active || monitor.xhrWrappers?.sendWrapper !== sendWrapper) return originalSend.call(this, body);
             const requestId = `xhr-${Date.now().toString(36)}-${(++monitor.sequence).toString(36)}`;
             const meta = this.__ttbmMonitor || { method: 'GET', url: '', headers: {} };
             const startedAt = Date.now();

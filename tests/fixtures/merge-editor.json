@@ -1,0 +1,275 @@
+[
+  {
+    "name": "basic",
+    "messages": [
+      {
+        "role": "system",
+        "content": "system instruction"
+      },
+      {
+        "role": "user",
+        "content": "Hi"
+      },
+      {
+        "role": "assistant",
+        "content": "Hello"
+      },
+      {
+        "role": "user",
+        "content": "Continue"
+      }
+    ],
+    "config": {},
+    "expected": [
+      {
+        "role": "assistant",
+        "content": "system instruction\n\nSophia: Hi\n\nGray: Hello\n\nSophia: Continue"
+      }
+    ]
+  },
+  {
+    "name": "examples",
+    "messages": [
+      {
+        "role": "system",
+        "name": "example_user",
+        "content": "Question"
+      },
+      {
+        "role": "system",
+        "name": "example_assistant",
+        "content": "Answer"
+      },
+      {
+        "role": "user",
+        "content": "Hi"
+      }
+    ],
+    "config": {},
+    "expected": [
+      {
+        "role": "assistant",
+        "content": "H: example_user: Question\n\nA: example_assistant: Answer\n\nSophia: Hi"
+      }
+    ]
+  },
+  {
+    "name": "protected",
+    "messages": [
+      {
+        "role": "system",
+        "content": "top"
+      },
+      {
+        "role": "user",
+        "content": "<|no-trans|>hold"
+      },
+      {
+        "role": "assistant",
+        "content": "tail"
+      }
+    ],
+    "config": {},
+    "expected": [
+      {
+        "role": "assistant",
+        "content": "top"
+      },
+      {
+        "role": "user",
+        "content": "hold"
+      },
+      {
+        "role": "assistant",
+        "content": "Gray: tail"
+      }
+    ]
+  },
+  {
+    "name": "adjacent",
+    "messages": [
+      {
+        "role": "user",
+        "content": "one"
+      },
+      {
+        "role": "user",
+        "content": "two"
+      },
+      {
+        "role": "assistant",
+        "content": "three"
+      },
+      {
+        "role": "assistant",
+        "content": "four"
+      }
+    ],
+    "config": {},
+    "expected": [
+      {
+        "role": "assistant",
+        "content": "Sophia: one\n\ntwo\n\nGray: three\n\nfour"
+      }
+    ]
+  },
+  {
+    "name": "flags",
+    "messages": [
+      {
+        "role": "user",
+        "content": "one <|Merge Human Disable|>"
+      },
+      {
+        "role": "user",
+        "content": "two"
+      },
+      {
+        "role": "assistant",
+        "content": "three <|Merge Disable|>"
+      }
+    ],
+    "config": {},
+    "expected": [
+      {
+        "role": "assistant",
+        "content": "Sophia: one\n\nSophia: two\n\nGray: three"
+      }
+    ]
+  },
+  {
+    "name": "whitespace",
+    "messages": [
+      {
+        "role": "user",
+        "content": "A <|join|> B <|space|> C <|curtail|> D"
+      }
+    ],
+    "config": {},
+    "expected": [
+      {
+        "role": "assistant",
+        "content": "Sophia: AB C\nD"
+      }
+    ]
+  },
+  {
+    "name": "regex",
+    "messages": [
+      {
+        "role": "user",
+        "content": "cat <regex>\"/cat/g\":\"dog\"</regex>"
+      }
+    ],
+    "config": {},
+    "expected": [
+      {
+        "role": "assistant",
+        "content": "Sophia: dog"
+      }
+    ]
+  },
+  {
+    "name": "named",
+    "messages": [
+      {
+        "role": "user",
+        "name": "Person",
+        "content": "Hi"
+      },
+      {
+        "role": "assistant",
+        "name": "Character",
+        "content": "Hello"
+      }
+    ],
+    "config": {},
+    "expected": [
+      {
+        "role": "assistant",
+        "content": "Sophia: Person: Hi\n\nGray: Character: Hello"
+      }
+    ]
+  },
+  {
+    "name": "relocation",
+    "messages": [
+      {
+        "role": "user",
+        "content": "one"
+      },
+      {
+        "role": "assistant",
+        "content": "two"
+      },
+      {
+        "role": "user",
+        "content": "three <@1>insert</@1>"
+      }
+    ],
+    "config": {},
+    "expected": [
+      {
+        "role": "assistant",
+        "content": "Sophia: one\n\nGray: two\n\ninsert\n\nSophia: three"
+      }
+    ]
+  },
+  {
+    "name": "separator",
+    "messages": [
+      {
+        "role": "system",
+        "content": "system [END] context"
+      },
+      {
+        "role": "user",
+        "content": "Hi"
+      }
+    ],
+    "config": {
+      "separator": "\\n---\\n",
+      "separator_system": "[END]"
+    },
+    "expected": [
+      {
+        "role": "system",
+        "content": "system [END]"
+      },
+      {
+        "role": "assistant",
+        "content": " context\n\n---\n\nSophia: Hi"
+      }
+    ]
+  },
+  {
+    "name": "protected-system",
+    "messages": [
+      {
+        "role": "system",
+        "content": "<|no-trans|>system [END] remaining"
+      },
+      {
+        "role": "user",
+        "content": "hello"
+      }
+    ],
+    "config": {
+      "separator_system": "[END]"
+    },
+    "expected": [
+      {
+        "role": "system",
+        "content": "system [END]"
+      },
+      {
+        "role": "system",
+        "content": "remaining"
+      },
+      {
+        "role": "assistant",
+        "content": "Sophia: hello"
+      }
+    ]
+  }
+]

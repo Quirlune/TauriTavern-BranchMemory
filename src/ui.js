@@ -1,4 +1,7 @@
 import { DOMPurify } from '/lib.js';
+import { promptControlHtml } from './prompt-control-ui.js';
+import { transformPrompt } from './prompt-control.js';
+import { promptDetailHtml, promptRecordTitle, promptRecordVisible } from './prompt-inspector.js';
 import { escapeHtml, statusInsertionIndex, uniqueId } from './core.js';
 
 function readPath(target, path) {
@@ -68,9 +71,9 @@ function monitorRecordHtml(record) {
             <summary>
                 <time>${escapeHtml(time)}</time>
                 <span class="ttbm-monitor-channel">${escapeHtml(record.channel)}</span>
-                <strong>${escapeHtml(record.type)}</strong>
+                <strong>${escapeHtml(promptRecordTitle(record))}</strong>
             </summary>
-            <pre class="ttbm-monitor-json">展开后加载完整事件数据</pre>
+            <div class="ttbm-monitor-detail">展开后读取提示词</div>
         </details>
     `;
 }
@@ -89,6 +92,7 @@ export class SettingsUi {
         this.imageRegenerationBusy = false;
         this.stats = null;
         this.modalTab = 'memory';
+        this.monitorFilter = this.monitor?.nativeLogs ? 'native' : 'requests';
     }
 
     mount() {
@@ -226,7 +230,7 @@ export class SettingsUi {
                     <div class="ttbm-inline-actions">
                         <button id="ttbm-open-settings" class="menu_button" type="button">详细设置</button>
                         <button id="ttbm-run-now" class="menu_button" type="button">立即同步</button>
-                        <button id="ttbm-open-monitor" class="menu_button" type="button">调用监控</button>
+                        <button id="ttbm-open-monitor" class="menu_button" type="button">提示词查看</button>
                     </div>
                     <small>楼层只计算 user 消息；AI 消息不计楼。摘要以消息链锚点跨分支复用。</small>
                 </div>
@@ -249,8 +253,9 @@ export class SettingsUi {
                         <button class="menu_button" data-tab="memory" type="button">记忆模块</button>
                         <button class="menu_button" data-tab="status" type="button">状态栏模块</button>
                         <button class="menu_button" data-tab="image" type="button">图片模块</button>
+                        <button class="menu_button" data-tab="prompt-control" type="button">提示词控制</button>
                         <button class="menu_button" data-tab="runtime" type="button">运行状态</button>
-                        <button class="menu_button" data-tab="monitor" type="button">调用监控</button>
+                        <button class="menu_button" data-tab="monitor" type="button">提示词查看</button>
                     </nav>
                     <div id="ttbm-modal-body" class="ttbm-modal-body"></div>
                 </section>
@@ -305,6 +310,31 @@ export class SettingsUi {
                 });
             }
 
+            if (event.target.closest('[data-add-control-rule]')) {
+                this.settings.promptControl.rules.push({ id: uniqueId('control'), source: '*', contains: '', target: 'keep', enabled: true });
+                this.renderModal();
+                this.#changed(true);
+            }
+            const controlAction = event.target.closest('[data-control-action]')?.dataset.controlAction;
+            if (controlAction) {
+                const output = document.getElementById('ttbm-control-output');
+                try {
+                    const input = JSON.parse(document.getElementById('ttbm-control-input').value);
+                    if (controlAction === 'preview') {
+                        if (!Array.isArray(input)) throw new Error('请填入 messages JSON 数组');
+                        output.textContent = JSON.stringify(transformPrompt(input, this.settings.promptControl, 'body'), null, 2);
+                    } else {
+                        if (!input || Array.isArray(input) || typeof input !== 'object') throw new Error('请填入脚本配置 JSON 对象');
+                        const config = this.settings.promptControl;
+                        for (const key of Object.keys(config.prefixes)) if (typeof input[key] === 'string') config.prefixes[key] = input[key];
+                        for (const key of ['separator', 'separator_system']) if (typeof input[key] === 'string') config[key] = input[key];
+                        this.#changed(true);
+                        this.renderModal();
+                        document.getElementById('ttbm-control-output').textContent = '已导入提示词格式配置。';
+                    }
+                } catch (error) { output.textContent = error.message; }
+            }
+
             const addEntry = event.target.closest('[data-add-entry]');
             if (addEntry) {
                 const list = readPath(this.settings, addEntry.dataset.addEntry);
@@ -350,6 +380,11 @@ export class SettingsUi {
 
     #readInput(event) {
         const target = event.target;
+        if (target.id === 'ttbm-monitor-filter') {
+            this.monitorFilter = target.value;
+            this.renderModal();
+            return;
+        }
         const path = target.dataset.setting;
         if (path) {
             let value = target.type === 'checkbox' ? target.checked : target.value;
@@ -390,6 +425,11 @@ export class SettingsUi {
         const list = readPath(this.settings, card.dataset.listPath);
         const item = list[Number(card.dataset.index)];
         if (!item) return;
+        if (target.dataset.controlField) {
+            item[target.dataset.controlField] = target.type === 'checkbox' ? target.checked : target.value;
+            this.#changed(event.type === 'change');
+            return;
+        }
 
         if (target.classList.contains('ttbm-entry-title')) item.title = target.value;
         if (target.classList.contains('ttbm-entry-role')) item.role = target.value;
@@ -430,6 +470,7 @@ export class SettingsUi {
         if (this.modalTab === 'image') body.innerHTML = this.#imageHtml();
         if (this.modalTab === 'runtime') body.innerHTML = this.#runtimeHtml();
         if (this.modalTab === 'monitor') body.innerHTML = this.#monitorHtml();
+        if (this.modalTab === 'prompt-control') body.innerHTML = promptControlHtml(this.settings.promptControl);
     }
 
     #memoryHtml() {
@@ -633,7 +674,7 @@ export class SettingsUi {
         return `
             <section class="ttbm-section ttbm-monitor-head">
                 <div class="ttbm-section-head">
-                    <h3>全局调用监控</h3>
+                    <h3>提示词查看</h3>
                     <span id="ttbm-monitor-state" class="ttbm-monitor-state ${state.active ? 'ttbm-monitor-live' : ''}">${state.active ? '记录中' : '已暂停'} · ${state.records.length}/${state.maxEvents}</span>
                 </div>
                 <div class="ttbm-card-actions ttbm-monitor-actions">
@@ -642,10 +683,17 @@ export class SettingsUi {
                     <button class="menu_button" type="button" data-monitor-action="expand">全部展开</button>
                     <button class="menu_button" type="button" data-monitor-action="collapse">全部收起</button>
                 </div>
-                <p class="ttbm-hint">同时记录生成生命周期、最终 prompt/采样参数以及底层 fetch/XHR 请求与响应。Authorization、API Key、token、password、secret、cookie 等字段会递归脱敏。流式响应只记录请求与响应头，正文由生成事件反映。</p>
+                <label>查看层级<select id="ttbm-monitor-filter" class="text_pole">
+                    ${option('native', '后端实际请求（TauriTavern 2.2）', this.monitorFilter)}
+                    ${option('requests', '全部模型请求（含前端中间态）', this.monitorFilter)}
+                    ${option('errors', '错误与告警', this.monitorFilter)}
+                    ${option('all', '事件诊断', this.monitorFilter)}
+                </select></label>
+                <p id="ttbm-native-state" class="ttbm-hint">${this.#nativeStateText()}</p>
+                <p class="ttbm-hint">按角色分组，编号保留发送顺序，长文本默认折叠。后端日志在调用完成后出现；展开时读取脱敏原文。</p>
             </section>
             <section id="ttbm-monitor-list" class="ttbm-monitor-list">
-                ${state.records.map(monitorRecordHtml).join('') || '<p class="ttbm-hint">尚无事件。保持监控开启后执行正文生成或插件调用。</p>'}
+                ${state.records.filter(record => promptRecordVisible(record, this.monitorFilter)).slice().reverse().map(monitorRecordHtml).join('') || '<p class="ttbm-hint">这一层尚无记录；可切换层级，或保持监控开启后执行生成。</p>'}
             </section>
         `;
     }
@@ -715,22 +763,38 @@ export class SettingsUi {
             status.textContent = `${state.active ? '记录中' : '已暂停'} · ${state.records.length}/${state.maxEvents}`;
             status.classList.toggle('ttbm-monitor-live', state.active);
         }
-        if (!state.record) return;
+        const nativeState = document.getElementById('ttbm-native-state');
+        if (nativeState) nativeState.textContent = this.#nativeStateText();
+        if (!state.record || !promptRecordVisible(state.record, this.monitorFilter)) return;
         const list = document.getElementById('ttbm-monitor-list');
         if (!list) return;
         if (!list.querySelector('[data-monitor-id]')) list.innerHTML = '';
-        list.insertAdjacentHTML('beforeend', monitorRecordHtml(state.record));
+        list.insertAdjacentHTML('afterbegin', monitorRecordHtml(state.record));
         while (list.querySelectorAll('[data-monitor-id]').length > state.maxEvents) {
-            list.querySelector('[data-monitor-id]')?.remove();
+            list.querySelector('[data-monitor-id]:last-child')?.remove();
         }
     }
 
-    #populateMonitorDetail(details) {
-        const pre = details.querySelector('.ttbm-monitor-json');
-        if (!pre || pre.dataset.loaded === 'true') return;
-        const record = this.monitor?.getRecord(details.dataset.monitorId);
-        pre.textContent = record ? JSON.stringify(record.details, null, 2) : '事件已从内存队列中移除。';
-        pre.dataset.loaded = 'true';
+    #nativeStateText() {
+        const state = this.monitorState.nativeState;
+        return ({ connected: '已连接 TauriTavern 后端 LLM 日志。', connecting: '正在连接后端日志…',
+            error: '后端日志读取失败；错误与告警中可查看原因。前端记录仍可用。',
+            unavailable: '当前宿主未提供后端日志 API；这里只能确认前端提交内容。' })[state] || '打开监控后连接后端日志。';
+    }
+
+    async #populateMonitorDetail(details) {
+        const container = details.querySelector('.ttbm-monitor-detail');
+        if (!container || container.dataset.loaded) return;
+        container.dataset.loaded = 'loading';
+        container.textContent = '正在读取…';
+        try {
+            const record = await this.monitor?.loadRecord(details.dataset.monitorId);
+            container.innerHTML = record ? promptDetailHtml(record, { prefixes: this.settings.promptControl.prefixes }) : '事件已从内存队列中移除。';
+            container.dataset.loaded = 'true';
+        } catch (error) {
+            container.textContent = `读取失败：${error.message}。宿主日志可能已轮换；收起后展开可重试。`;
+            delete container.dataset.loaded;
+        }
     }
 
     showError(error) {

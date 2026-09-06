@@ -8,6 +8,8 @@ import {
     SMALL_TABLE,
     STATUS_TABLE
 } from './defaults.js';
+import { buildSnapshot } from './core.js';
+import { chatIdentity, readFullHistory } from './history.js';
 
 export async function waitForTauriHost() {
     const ready = globalThis.__TAURITAVERN__?.ready ?? globalThis.__TAURITAVERN_MAIN_READY__;
@@ -23,13 +25,21 @@ export async function waitForTauriHost() {
 }
 
 export class StorageGateway {
-    constructor(host) {
+    constructor(host, { getLiveMessages = null } = {}) {
         this.host = host;
         this.globalStore = host.api.extension.store;
+        this.getLiveMessages = getLiveMessages;
+        this.handle = null;
+        this.handleIdentity = null;
     }
 
     currentHandle() {
-        return this.host.api.chat.current.handle();
+        const identity = chatIdentity(this.currentRef());
+        if (!this.handle || this.handleIdentity !== identity) {
+            this.handle = this.host.api.chat.current.handle();
+            this.handleIdentity = identity;
+        }
+        return this.handle;
     }
 
     currentRef() {
@@ -38,6 +48,26 @@ export class StorageGateway {
 
     async currentWindowInfo() {
         return this.host.api.chat.current.windowInfo();
+    }
+
+    async readSnapshot(handle, options = {}) {
+        const identity = chatIdentity(this.currentRef());
+        if (!this.getLiveMessages || handle !== this.currentHandle()) return readFullHistory(handle, options);
+        const windowInfo = await this.currentWindowInfo();
+        if (identity !== chatIdentity(this.currentRef())) return readFullHistory(handle, options);
+        const live = structuredClone(this.getLiveMessages());
+        // 2.2 history.tail reads saved JSONL, while rendered replies/swipes can
+        // still be awaiting persistence. Its mode=off chat array is complete.
+        if (windowInfo?.mode === 'off' && Number(windowInfo.windowStartIndex) === 0) return buildSnapshot(live);
+        const persisted = await readFullHistory(handle, options);
+        const start = Number(windowInfo?.windowStartIndex);
+        const total = Number(windowInfo?.totalCount);
+        if (!Number.isInteger(start) || start < 0 || !Number.isInteger(total) || total < start + live.length) {
+            throw new Error('宿主未提供有效聊天窗口边界，无法安全读取当前楼层。');
+        }
+        const messages = structuredClone(persisted.messages).slice(0, total);
+        messages.splice(start, live.length, ...live);
+        return buildSnapshot(messages);
     }
 
     async loadSettings() {
@@ -102,6 +132,10 @@ export class StorageGateway {
 
     async getStatus(key) {
         return this.tryGetRecord(STATUS_TABLE, key);
+    }
+
+    async listStatusKeys() {
+        return this.globalStore.listKeys({ namespace: EXTENSION_NAMESPACE, table: STATUS_TABLE });
     }
 
     async setStatus(key, value) {

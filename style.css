@@ -560,3 +560,13 @@ body.ttbm-image-viewer-open {
     }
 
 }
+.ttbm-monitor-detail { padding: 10px; min-width: 0; }
+.ttbm-prompt-role { border-left: 3px solid var(--SmartThemeQuoteColor, #72b7ac); margin: 12px 0; padding-left: 12px; }
+.ttbm-prompt-message { margin: 8px 0; border: 1px solid color-mix(in srgb, var(--SmartThemeBodyColor) 18%, transparent); border-radius: 6px; }
+.ttbm-prompt-part { margin: 8px; min-width: 0; }
+.ttbm-monitor-event .ttbm-monitor-detail summary { display: block; padding: 8px; cursor: pointer; overflow-wrap: anywhere; }
+.ttbm-prompt-part summary span { opacity: .6; display: block; font-size: 12px; }
+.ttbm-prompt-text { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; max-height: 65vh; overflow: auto; padding: 12px; margin: 4px 0; font: 13px/1.6 ui-monospace, monospace; text-align: left; }
+.ttbm-role-table > div { align-items: center; margin-bottom: 10px; }
+.ttbm-tabs { flex-wrap: wrap; }
+.ttbm-modal .ttbm-monitor-head { position: static; }

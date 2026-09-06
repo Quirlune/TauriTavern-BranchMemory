@@ -11,11 +11,13 @@ import {
     updateMessageBlock
 } from '/script.js';
 import { ConnectionManagerRequestService } from '/scripts/extensions/shared.js';
-import { AssistantGenerationGate, clampInteger, deepMerge, promptEntriesUseMacros } from './core.js';
+import { clampInteger, deepMerge, promptEntriesUseMacros } from './core.js';
 import { DEFAULT_SETTINGS, migrateRunPodEndpointId } from './defaults.js';
 import { BranchMemoryEngine } from './engine.js';
 import { characterPromptInfo, clearHistoryCache } from './history.js';
 import { ImagePipeline } from './images.js';
+import { ModelClient } from './model-client.js';
+import { PromptController } from './prompt-control.js';
 import { RequestMonitor } from './monitor.js';
 import { StorageGateway, waitForTauriHost } from './storage.js';
 import { SettingsUi } from './ui.js';
@@ -27,6 +29,7 @@ const INJECTION_KEYS = {
 const IMAGE_FAST_TRIGGER_DELAY_MS = 120;
 const IMAGE_STATUS_TRIGGER_DELAY_MS = 720;
 const IMAGE_STATUS_MACROS = ['status', 'previous_status', 'status_raw', 'status_injection'];
+let activeCleanup = null;
 let activeStorage = null;
 let activeMonitor = null;
 let activeImagePipeline = null;
@@ -105,14 +108,16 @@ function imagePromptNeedsFreshStatus(settings) {
 }
 
 export async function bootstrapExtension() {
+    activeCleanup?.();
     activeMonitor?.stop();
     activeImagePipeline?.cancel();
     clearHistoryCache();
     const host = await waitForTauriHost();
-    const storage = new StorageGateway(host);
+    const storage = new StorageGateway(host, { getLiveMessages: () => chat });
     activeStorage = storage;
     const saved = await storage.loadSettings();
     const settings = normalizeSettings(deepMerge(DEFAULT_SETTINGS, saved || {}));
+    let lastAppliedSettings = JSON.stringify(settings);
 
     let saveTimer = null;
     let pendingSettingsApply = false;
@@ -122,12 +127,10 @@ export async function bootstrapExtension() {
     let engine;
     let imagePipeline;
     let ui;
-    const generationGate = new AssistantGenerationGate();
-    let generationResetTimer = null;
+    let workVersion = 0;
+    let turn = null;
     const imageGenerationTimers = new Set();
     let imageGenerationCancelVersion = 0;
-    let generationRendered = false;
-    let generationEnded = false;
     let imageGenerationScheduledForTurn = false;
     const monitor = new RequestMonitor({
         eventSource,
@@ -135,11 +138,16 @@ export async function bootstrapExtension() {
         onChange: state => ui?.updateMonitor(state)
     });
     activeMonitor = monitor;
+    const modelClient = new ModelClient({ generateRaw, connectionService: ConnectionManagerRequestService, getSettings: () => settings, monitor });
+    const promptController = new PromptController({ eventSource, eventTypes: event_types, getSettings: () => settings,
+        onTransform: details => monitor.record('prompt', 'prompt_control', details) });
+    promptController.start();
 
     const enqueue = (options) => {
+        const version = workVersion;
         queue = queue
-            .then(() => engine.refresh(options))
-            .catch((error) => ui.showError(error));
+            .then(() => version === workVersion ? engine.refresh(options) : undefined)
+            .catch((error) => { if (error?.name !== 'AbortError') ui.showError(error); });
         return queue;
     };
 
@@ -189,24 +197,24 @@ export async function bootstrapExtension() {
         });
     };
 
-    const resetGenerationGateSoon = (delay = 1800) => {
-        clearTimeout(generationResetTimer);
-        generationResetTimer = setTimeout(() => {
-            generationGate.reset();
-        }, delay);
-    };
-
     const schedule = (options, delay = 500) => {
-        pendingRefresh.generateMemory ||= Boolean(options.generateMemory);
-        pendingRefresh.generateStatus ||= Boolean(options.generateStatus);
-        pendingRefresh.reason = options.reason || pendingRefresh.reason;
-        pendingRefresh.generationType = options.generationType || pendingRefresh.generationType || '';
+        pendingRefresh = { ...options };
         clearTimeout(refreshTimer);
         refreshTimer = setTimeout(() => {
             const task = pendingRefresh;
-            pendingRefresh = { generateMemory: false, generateStatus: false, reason: 'scheduled', generationType: '' };
+            pendingRefresh = {};
             void enqueue(task);
         }, delay);
+    };
+
+    const invalidateWork = () => {
+        workVersion += 1;
+        engine?.invalidate();
+        modelClient.cancel();
+        clearTimeout(refreshTimer);
+        pendingRefresh = {};
+        cancelPendingImageGeneration();
+        imagePipeline?.cancel();
     };
 
     const getConnectionProfiles = () => {
@@ -231,6 +239,10 @@ export async function bootstrapExtension() {
         getCurrentCharacterInfo: () => characterPromptInfo(storage.currentRef()),
         onSettingsChanged: (_settings, { apply = false } = {}) => {
             normalizeSettings(settings);
+            if (apply && lastAppliedSettings !== JSON.stringify(settings)) {
+                lastAppliedSettings = JSON.stringify(settings);
+                invalidateWork();
+            }
             pendingSettingsApply ||= apply;
             clearTimeout(saveTimer);
             saveTimer = setTimeout(() => {
@@ -255,6 +267,10 @@ export async function bootstrapExtension() {
             return enqueueImages({ regenerate: true, reason: 'manual' });
         },
         onRunNow: () => {
+            if (turn?.accepted && !turn.ended) {
+                ui.showError(new Error('请等待当前正文生成结束后再同步，避免读取尚未完成的楼层。'));
+                return Promise.resolve();
+            }
             return enqueue({ generateMemory: true, generateStatus: true, reason: 'manual' })
                 .then(() => enqueueImages({ generate: true, reason: 'manual' }));
         }
@@ -263,27 +279,7 @@ export async function bootstrapExtension() {
     engine = new BranchMemoryEngine({
         storage,
         getSettings: () => settings,
-        generate: async ({ prompt, responseLength, apiConfig }) => {
-            if (apiConfig?.mode === 'connection_profile') {
-                const profileId = String(apiConfig.connectionProfileId || '').trim();
-                if (!profileId) {
-                    throw new Error('已选择独立 API，但尚未选择 Connection Manager 配置。');
-                }
-                const response = await ConnectionManagerRequestService.sendRequest(
-                    profileId,
-                    prompt,
-                    responseLength,
-                    {
-                        stream: false,
-                        extractData: true,
-                        includePreset: apiConfig.includePreset !== false,
-                        includeInstruct: false
-                    }
-                );
-                return response?.content || '';
-            }
-            return generateRaw({ prompt, responseLength, trimNames: false });
-        },
+        generate: request => modelClient.generate(request),
         applyInjection,
         renderStatus: (content, statusSettings) => ui.renderStatus(content, statusSettings),
         updateStats: stats => ui.updateStats(stats)
@@ -328,27 +324,7 @@ export async function bootstrapExtension() {
             }
             return { renderMessageIndex: localIndex };
         },
-        generate: async ({ prompt, responseLength, apiConfig }) => {
-            if (apiConfig?.mode === 'connection_profile') {
-                const profileId = String(apiConfig.connectionProfileId || '').trim();
-                if (!profileId) {
-                    throw new Error('图片规划已选择独立 API，但尚未选择 Connection Manager 配置。');
-                }
-                const response = await ConnectionManagerRequestService.sendRequest(
-                    profileId,
-                    prompt,
-                    responseLength,
-                    {
-                        stream: false,
-                        extractData: true,
-                        includePreset: apiConfig.includePreset !== false,
-                        includeInstruct: false
-                    }
-                );
-                return response?.content || '';
-            }
-            return generateRaw({ prompt, responseLength, trimNames: false });
-        },
+        generate: request => modelClient.generate({ ...request, scope: 'image', label: '图片规划' }),
         onError: error => ui.showError(error),
         updateStats: stats => ui.updateStats(stats)
     });
@@ -357,98 +333,106 @@ export async function bootstrapExtension() {
     ui.mount();
     await storage.saveSettings(settings);
 
-    eventSource.on(event_types.CHAT_CHANGED, () => {
+    const listeners = [];
+    const on = (name, handler) => {
+        const event = event_types[name];
+        if (!event) return;
+        eventSource.on(event, handler);
+        listeners.push({ event, handler });
+    };
+    const completeTurn = () => {
+        if (!turn?.accepted || !turn.rendered || !turn.ended || turn.scheduled) return;
+        turn.scheduled = true;
+        clearHistoryCache(storage.currentHandle());
+        schedule({ generateMemory: true, generateStatus: true, reason: 'assistant_output',
+            generationType: turn.type, forceStatus: turn.type === 'regenerate' }, 50);
+        scheduleAssistantImageGenerationOnce();
+    };
+    on('CHAT_CHANGED', () => {
+        turn = null;
+        invalidateWork();
         clearHistoryCache();
-        cancelPendingImageGeneration();
-        imagePipeline?.cancel();
+        ui.renderStatus('', settings.status);
+        applyInjection('status', '', settings.status.injection);
+        applyInjection('memory', '', settings.memory.injection);
         imagePipeline?.clearRendered();
-        schedule({ generateMemory: false, generateStatus: false, reason: 'chat_changed' }, 250);
+        schedule({ reason: 'chat_changed' }, 250);
         void enqueueImages({ generate: false, reason: 'chat_changed' });
     });
-    if (event_types.MORE_MESSAGES_LOADED) {
-        eventSource.on(event_types.MORE_MESSAGES_LOADED, () => {
-            void enqueueImages({ generate: false, reason: 'more_messages_loaded' });
-        });
-    }
-    eventSource.on(event_types.GENERATION_AFTER_COMMANDS, (type, _options, dryRun) => {
-        if (generationGate.afterCommands(type, dryRun)) clearTimeout(generationResetTimer);
-    });
-    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, (_messageId, type) => {
-        ui.ensureStatusPosition();
-        if (type === 'first_message') {
-            schedule({ generateMemory: false, generateStatus: false, reason: 'first_message' }, 300);
-            return;
-        }
-        if (!generationGate.shouldTrigger(type)) {
-            return;
-        }
-        generationRendered = true;
-        schedule({ generateMemory: true, generateStatus: true, reason: 'assistant_output' }, 650);
-        if (generationEnded || !event_types.GENERATION_ENDED) {
-            scheduleAssistantImageGenerationOnce();
-        }
-        resetGenerationGateSoon();
-    });
-    eventSource.on(event_types.USER_MESSAGE_RENDERED, () => {
-        ui.ensureStatusPosition();
-    });
-    eventSource.on(event_types.MESSAGE_SWIPED, () => {
+    on('MORE_MESSAGES_LOADED', () => { void enqueueImages({ generate: false, reason: 'more_messages_loaded' }); });
+    on('GENERATION_STARTED', async (type, _options, dryRun) => {
+        if (dryRun || ['quiet', 'impersonate'].includes(type)) return;
+        invalidateWork();
         clearHistoryCache(storage.currentHandle());
+        // Never leave the replaced reply's injection installed if reading the
+        // current history/cache fails while preparing a new body request.
+        applyInjection('status', '', settings.status.injection);
+        applyInjection('memory', '', settings.memory.injection);
+        turn = { type: type || 'normal', accepted: false, rendered: false, ended: false, scheduled: false };
+        imageGenerationScheduledForTurn = false;
+        // This read-only refresh must not wait behind an obsolete model request.
+        try { await engine.refresh({ reason: 'before_generation', generationType: turn.type }); }
+        catch (error) { ui.showError(error); }
+    });
+    on('GENERATION_AFTER_COMMANDS', (type, _options, dryRun) => {
+        if (dryRun || ['quiet', 'impersonate'].includes(type)) return;
+        if (turn) turn.accepted = true;
+    });
+    on('CHARACTER_MESSAGE_RENDERED', (_messageId, type) => {
         ui.ensureStatusPosition();
-        cancelPendingImageGeneration();
-        imagePipeline?.cancel();
+        if (type === 'first_message') { schedule({ reason: 'first_message' }, 300); return; }
+        if (!turn?.accepted || ['quiet', 'impersonate'].includes(type)) return;
+        turn.rendered = true;
+        if (!event_types.GENERATION_ENDED) turn.ended = true;
+        completeTurn();
+    });
+    on('USER_MESSAGE_RENDERED', () => { ui.ensureStatusPosition(); });
+    on('MESSAGE_SWIPED', () => {
+        turn = null;
+        invalidateWork();
+        clearHistoryCache(storage.currentHandle());
+        ui.renderStatus('', settings.status);
+        applyInjection('status', '', settings.status.injection);
         imagePipeline?.clearRendered();
-        generationGate.reset();
-        clearTimeout(generationResetTimer);
-        schedule({ generateMemory: true, generateStatus: true, reason: 'message_swiped' }, 500);
+        schedule({ reason: 'message_swiped' });
+        scheduleCachedImageRender('message_swiped');
     });
-    eventSource.on(event_types.MESSAGE_EDITED, () => {
+    on('MESSAGE_EDITED', () => {
+        turn = null;
+        invalidateWork();
         clearHistoryCache(storage.currentHandle());
-        ui.ensureStatusPosition();
-        cancelPendingImageGeneration();
-        imagePipeline?.cancel();
+        ui.renderStatus('', settings.status);
         imagePipeline?.clearRendered();
         scheduleCachedImageRender('message_edited');
-        schedule({ generateMemory: true, generateStatus: false, reason: 'message_edited' }, 500);
+        schedule({ generateMemory: true, reason: 'message_edited' });
     });
-    eventSource.on(event_types.MESSAGE_DELETED, () => {
+    on('MESSAGE_DELETED', () => {
         clearHistoryCache(storage.currentHandle());
-        ui.ensureStatusPosition();
-        cancelPendingImageGeneration();
-        imagePipeline?.cancel();
+        // Regenerate deletes the old reply after GENERATION_STARTED. Keep its
+        // prepared previous-floor injection until the new reply has completed.
+        if (turn?.accepted && turn.type === 'regenerate' && !turn.ended) return;
+        turn = null;
+        invalidateWork();
+        ui.renderStatus('', settings.status);
         imagePipeline?.clearRendered();
-        schedule({ generateMemory: false, generateStatus: false, reason: 'message_deleted' }, 500);
+        schedule({ reason: 'message_deleted' });
     });
-    eventSource.on(event_types.GENERATION_STARTED, async (type, _options, dryRun) => {
-        generationRendered = false;
-        generationEnded = false;
-        imageGenerationScheduledForTurn = false;
-        if (!generationGate.start(type, dryRun)) {
-            return;
-        }
-        await enqueue({ generateMemory: false, generateStatus: false, reason: 'before_generation', generationType: type || '' });
+    on('GENERATION_ENDED', () => {
+        if (!turn?.accepted) return;
+        turn.ended = true;
+        completeTurn();
     });
-    if (event_types.GENERATION_ENDED) {
-        eventSource.on(event_types.GENERATION_ENDED, () => {
-            generationEnded = true;
-            if (generationRendered) {
-                scheduleAssistantImageGenerationOnce();
-                generationGate.reset();
-                clearTimeout(generationResetTimer);
-                return;
-            }
-            resetGenerationGateSoon(3000);
-        });
-    }
-    eventSource.on(event_types.GENERATION_STOPPED, () => {
-        if (!generationEnded) {
-            cancelPendingImageGeneration();
-            imagePipeline?.cancel();
-            imageGenerationScheduledForTurn = false;
-        }
-        generationGate.reset();
-        clearTimeout(generationResetTimer);
+    on('GENERATION_STOPPED', () => {
+        turn = null;
+        invalidateWork();
+        schedule({ reason: 'generation_stopped' });
     });
+    activeCleanup = () => {
+        invalidateWork();
+        clearTimeout(saveTimer);
+        promptController.stop();
+        for (const { event, handler } of listeners) eventSource.removeListener(event, handler);
+    };
 
     schedule({ generateMemory: false, generateStatus: false, reason: 'startup' }, 100);
     void enqueueImages({ generate: false, reason: 'startup' });
@@ -456,6 +440,8 @@ export async function bootstrapExtension() {
 }
 
 export async function cleanExtensionData() {
+    activeCleanup?.();
+    activeCleanup = null;
     activeMonitor?.stop();
     activeMonitor = null;
     activeImagePipeline?.cancel();
