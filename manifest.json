@@ -6,7 +6,7 @@
   "js": "index.js",
   "css": "style.css",
   "author": "Codex",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "TauriTavern branch-aware memory, floor-bound status, prompt control, native prompt inspection, and RunPod images.",
   "homePage": "https://tauritavern.github.io/api/",
   "auto_update": false,
